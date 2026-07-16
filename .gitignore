@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+backend/uploads/*
+.tmp/
+.docx_render/
+erp-financial-request-payment-control-system.zip
