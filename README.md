@@ -52,15 +52,53 @@ http://192.168.5.168:5174
 
 The platform includes an English/Spanish toggle on the login screen and top navigation bar. The selected language is saved in the browser.
 
-## Demo Users
+## Local Accounts
 
-| Role | Email | Password |
-| --- | --- | --- |
-| Admin | `admin@erp.local` | `Admin123!` |
-| Solicitor | `solicitor@erp.local` | `User123!` |
-| Approver | `approver@erp.local` | `Approver123!` |
-| Accounting | `accounting@erp.local` | `Accounting123!` |
-| Treasury | `treasury@erp.local` | `Treasury123!` |
+Deployment passwords are generated locally and stored in the git-ignored `deployment-credentials.txt` file. Do not publish this file or share credentials with unauthorized users.
+
+## Temporary Cloudflare Sharing
+
+MongoDB must be running. From the project root, run:
+
+```bash
+npm run share
+```
+
+This builds the production frontend, starts the local production server on port `5050` when needed, creates a new Cloudflare Quick Tunnel, and prints the public HTTPS link. The tunnel runs in the background and can coexist with the development API on port `5000`.
+
+Show the current link again:
+
+```bash
+npm run share:status
+```
+
+Stop public access:
+
+```bash
+npm run share:stop
+```
+
+The link is temporary and changes whenever a new tunnel is created. Keep this PC, MongoDB, and the ERP server running while other people use the system.
+
+### Stable Render Access Page
+
+The free Render static site in `link-site/` provides one permanent access-page URL. Every `npm run share` updates `link-site/link.json` with the newest Cloudflare tunnel address.
+
+Publish the current tunnel address after generating it:
+
+```bash
+npm run link:publish
+```
+
+Or generate a new tunnel and publish its address in one command:
+
+```bash
+npm run share:publish
+```
+
+Render redeploys the small static site automatically after GitHub receives the link update. The Render page is a stable pointer; the host PC and Cloudflare tunnel must still remain running.
+
+For phones and other computers, share only the generated `https://...trycloudflare.com` address. Do not share `localhost`, port `5050`, or a `192.168.x.x` address because those are local-only. If a phone reports that the hostname cannot be found, switch from office Wi-Fi to mobile data or use Cloudflare DNS `1.1.1.1`; some office DNS servers temporarily cache new Quick Tunnel names as unavailable.
 
 ## Main Workflow
 

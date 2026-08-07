@@ -17,8 +17,8 @@ const demos = [
 export default function Login() {
   const { login, isAuthenticated } = useAuth();
   const { t } = useLanguage();
-  const [email, setEmail] = useState("admin@erp.local");
-  const [password, setPassword] = useState("Admin123!");
+  const [email, setEmail] = useState(import.meta.env.DEV ? "admin@erp.local" : "");
+  const [password, setPassword] = useState(import.meta.env.DEV ? "Admin123!" : "");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -60,8 +60,12 @@ export default function Login() {
           <label className="field"><span>{t("Email")}</span><input type="email" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} required autoFocus /></label>
           <label className="field"><span>{t("Password")}</span><input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
           <button className="primary-button login-submit" type="submit" disabled={loading}><LogIn size={17} /><span>{t(loading ? "Signing in..." : "Sign in")}</span></button>
-          <div className="login-divider"><span>{t("Local demo access")}</span></div>
-          <label className="field"><span>{t("Choose demo role")}</span><select defaultValue="Admin" onChange={selectDemo}>{demos.map((demo) => <option key={demo.role} value={demo.role}>{t(demo.role)}</option>)}</select></label>
+          {import.meta.env.DEV && (
+            <>
+              <div className="login-divider"><span>{t("Local demo access")}</span></div>
+              <label className="field"><span>{t("Choose demo role")}</span><select defaultValue="Admin" onChange={selectDemo}>{demos.map((demo) => <option key={demo.role} value={demo.role}>{t(demo.role)}</option>)}</select></label>
+            </>
+          )}
         </form>
       </section>
     </main>

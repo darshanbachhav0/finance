@@ -1,5 +1,6 @@
 import cors from "cors";
 import express from "express";
+import fs from "fs";
 import helmet from "helmet";
 import morgan from "morgan";
 import path from "path";
@@ -9,8 +10,11 @@ import routes from "./routes/index.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const isProduction = process.env.NODE_ENV === "production";
 
 const app = express();
+
+if (isProduction) app.set("trust proxy", 1);
 
 const allowedOrigins = (process.env.CLIENT_URLS || process.env.CLIENT_URL || "http://localhost:5174,http://127.0.0.1:5174")
   .split(",")
@@ -28,18 +32,20 @@ app.use(
     crossOriginResourcePolicy: { policy: "cross-origin" }
   })
 );
-app.use(
-  cors({
-    origin(origin, callback) {
-      if (isAllowedDevOrigin(origin)) {
-        callback(null, true);
-        return;
-      }
-      callback(new Error(`CORS blocked origin: ${origin}`));
-    },
-    credentials: true
-  })
-);
+if (!isProduction) {
+  app.use(
+    cors({
+      origin(origin, callback) {
+        if (isAllowedDevOrigin(origin)) {
+          callback(null, true);
+          return;
+        }
+        callback(new Error(`CORS blocked origin: ${origin}`));
+      },
+      credentials: true
+    })
+  );
+}
 app.use(morgan("dev"));
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true }));
@@ -52,6 +58,26 @@ app.get("/health", (_req, res) => {
 });
 
 app.use("/api", routes);
+
+if (isProduction) {
+  const frontendDist = path.resolve(__dirname, "..", "..", "frontend", "dist");
+  const frontendIndex = path.join(frontendDist, "index.html");
+
+  if (!fs.existsSync(frontendIndex)) {
+    throw new Error("Frontend production build is missing. Run npm run build before starting the public server.");
+  }
+
+  app.use(express.static(frontendDist, { index: false, maxAge: "1d" }));
+  app.get("*", (req, res, next) => {
+    if (req.path.startsWith("/api/") || req.path.startsWith("/uploads/") || req.path === "/health") {
+      next();
+      return;
+    }
+    res.setHeader("Cache-Control", "no-store");
+    res.sendFile(frontendIndex);
+  });
+}
+
 app.use(notFoundHandler);
 app.use(errorHandler);
 

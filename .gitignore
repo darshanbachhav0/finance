@@ -5,3 +5,4 @@ backend/uploads/*
 .tmp/
 .docx_render/
 erp-financial-request-payment-control-system.zip
+deployment-credentials.txt

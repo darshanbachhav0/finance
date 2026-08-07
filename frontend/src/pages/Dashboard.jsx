@@ -1,7 +1,7 @@
 import { AlertTriangle, CalendarClock, CircleDollarSign, FileText, RefreshCw, Users } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import api from "../api/client.js";
+import api, { apiAssetUrl } from "../api/client.js";
 import DataTable from "../components/DataTable.jsx";
 import Message from "../components/Message.jsx";
 import PageHeader from "../components/PageHeader.jsx";
@@ -146,7 +146,7 @@ export default function Dashboard() {
               <div className="workspace-panel dashboard-primary">
                 <div className="section-heading"><div><h3>{t("Recent generated files")}</h3><p>{t("Bank and accounting exports created by the team.")}</p></div></div>
                 <DataTable controls={false} rows={summary.recentFiles} columns={[
-                  { key: "fileName", label: "File", render: (row) => <a href={`http://${window.location.hostname}:5000${row.url}`} target="_blank" rel="noreferrer">{row.fileName}</a> },
+                  { key: "fileName", label: "File", render: (row) => <a href={apiAssetUrl(row.url)} target="_blank" rel="noreferrer">{row.fileName}</a> },
                   { key: "kind", label: "Type" },
                   { key: "rowCount", label: "Rows" },
                   { key: "createdAt", label: "Generated", render: (row) => new Date(row.createdAt).toLocaleString() },
