@@ -6,6 +6,88 @@ import { getConsolidation } from "../services/accountingService.js";
 import { flattenConsolidationRow, persistReportFile, toCsv } from "../services/exportService.js";
 import { AppError } from "../utils/AppError.js";
 import GeneratedFile from "../models/GeneratedFile.js";
+import FinancialRequest from "../models/FinancialRequest.js";
+import { generateProvisionEntries } from "../services/accountingService.js";
+import { recordAudit, workflowEvent } from "../services/auditService.js";
+import { ensurePeriodOpen } from "../services/periodService.js";
+import { REQUEST_STATUS } from "../utils/constants.js";
+
+const populatedRequest = [
+  { path: "supplier" },
+  { path: "solicitor", select: "name email role area" },
+  { path: "lines.costCenter" },
+  { path: "lines.expenseType" },
+  { path: "approvalHistory.actor", select: "name email role" },
+  { path: "budgetCommitment" },
+  { path: "fiscalData.processedBy", select: "name email role" }
+];
+
+export const listPendingAccounting = asyncHandler(async (_req, res) => {
+  const data = await FinancialRequest.find({ status: REQUEST_STATUS.BUDGET_COMMITTED })
+    .populate(populatedRequest)
+    .sort({ updatedAt: 1 });
+  res.json({ data });
+});
+
+export const processPayable = asyncHandler(async (req, res) => {
+  const request = await FinancialRequest.findById(req.params.id);
+  if (!request) throw new AppError(404, "Financial request not found.");
+  if (request.status !== REQUEST_STATUS.BUDGET_COMMITTED) {
+    throw new AppError(422, "Only budget-committed requests can be processed by Accounting.");
+  }
+
+  const required = ["documentType", "series", "number", "documentDate", "accountingDate", "fiscalPeriod", "accountNumber"];
+  const missing = required.filter((field) => !String(req.body[field] || "").trim());
+  if (missing.length) throw new AppError(422, `Missing fiscal field(s): ${missing.join(", ")}.`);
+  await ensurePeriodOpen(req.body.fiscalPeriod);
+
+  const duplicate = await FinancialRequest.findOne({
+    _id: { $ne: request._id },
+    supplier: request.supplier,
+    "fiscalData.documentType": req.body.documentType,
+    "fiscalData.series": String(req.body.series).toUpperCase(),
+    "fiscalData.number": req.body.number
+  });
+  if (duplicate) {
+    throw new AppError(409, `Duplicate fiscal document already registered in ${duplicate.requestNumber}.`);
+  }
+
+  request.fiscalData = {
+    documentType: req.body.documentType,
+    series: String(req.body.series).toUpperCase(),
+    number: req.body.number,
+    documentDate: req.body.documentDate,
+    accountingDate: req.body.accountingDate,
+    fiscalPeriod: req.body.fiscalPeriod,
+    accountNumber: req.body.accountNumber,
+    subaccountNumber: req.body.subaccountNumber,
+    processedAt: new Date(),
+    processedBy: req.user._id
+  };
+  const from = request.status;
+  request.status = REQUEST_STATUS.APPROVED_PAYABLE;
+  request.approvalHistory.push(workflowEvent({
+    action: "ACCOUNTED",
+    from,
+    to: request.status,
+    user: req.user,
+    req,
+    comments: req.body.comments || "Fiscal document validated, preliminary entry generated, and CXP registered."
+  }));
+  await request.save();
+  await generateProvisionEntries(request, req.user._id);
+  await recordAudit({
+    entityType: "FinancialRequest",
+    entity: request,
+    action: "ACCOUNTED",
+    user: req.user,
+    req,
+    comments: req.body.comments,
+    changes: { fiscalDocument: `${request.fiscalData.documentType} ${request.fiscalData.series}-${request.fiscalData.number}` }
+  });
+  await request.populate(populatedRequest);
+  res.json({ data: request });
+});
 
 async function hydrateConsolidation(rows) {
   const costCenterIds = [...new Set(rows.map((row) => String(row.costCenter)))];

@@ -11,7 +11,7 @@ import StatusBadge from "../components/StatusBadge.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import { useToast } from "../context/ToastContext.jsx";
-import { requestStatuses, requestTypes } from "../utils/options.js";
+import { expenseNatures, requestPriorities, requestStatuses, requestTypes } from "../utils/options.js";
 
 export default function RequestsList() {
   const { user } = useAuth();
@@ -77,6 +77,8 @@ export default function RequestsList() {
           filters={[
             { key: "status", label: "statuses", allLabel: "All statuses", options: requestStatuses },
             { key: "requestType", label: "types", allLabel: "All types", options: requestTypes },
+            { key: "expenseNature", label: "expense natures", allLabel: "All expense natures", options: expenseNatures },
+            { key: "priority", label: "priorities", allLabel: "All priorities", options: requestPriorities },
             { key: "accountingPeriod", label: "periods", allLabel: "All periods", options: periods }
           ]}
           initialFilters={{ status: searchParams.get("status") || "" }}
@@ -91,6 +93,8 @@ export default function RequestsList() {
           columns={[
             { key: "requestNumber", label: "Request", render: (row) => <Link to={`/requests/${row._id}`}>{row.requestNumber}</Link> },
             { key: "requestType", label: "Type" },
+            { key: "expenseNature", label: "Expense nature" },
+            { key: "priority", label: "Priority", render: (row) => <span className={`priority priority-${String(row.priority || "MEDIA").toLowerCase()}`}>{t(row.priority || "MEDIA")}</span> },
             { key: "supplier", label: "Supplier", getValue: (row) => row.supplier?.name, render: (row) => <div className="primary-cell"><strong>{row.supplier?.name || "-"}</strong><span>{row.supplier?.rucDni}</span></div> },
             { key: "solicitor", label: "Solicitor", getValue: (row) => row.solicitor?.name, render: (row) => row.solicitor?.name || "-" },
             { key: "accountingPeriod", label: "Period" },

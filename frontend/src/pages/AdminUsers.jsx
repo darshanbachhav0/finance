@@ -13,6 +13,7 @@ export default function AdminUsers() {
         { name: "email", label: "Email", type: "email", required: true },
         { name: "password", label: "Password", type: "password", requiredOnCreate: true, hint: "Required when creating a user." },
         { name: "role", label: "Role", type: "select", required: true, options: ["Admin", "Solicitor", "Approver", "Accounting", "Treasury"] },
+        { name: "approvalLevel", label: "Approval level", type: "select", defaultValue: "AREA_DIRECTOR", options: ["AREA_DIRECTOR", "VICE_RECTOR"], hint: "Used only when the role is Approver." },
         { name: "area", label: "Area", defaultValue: "General" },
         { name: "active", label: "Active", type: "checkbox", defaultValue: true }
       ]}
@@ -20,6 +21,7 @@ export default function AdminUsers() {
         { key: "name", label: "Name" },
         { key: "email", label: "Email" },
         { key: "role", label: "Role" },
+        { key: "approvalLevel", label: "Approval level", render: (row) => row.role === "Approver" ? row.approvalLevel : "-" },
         { key: "area", label: "Area" },
         { key: "active", label: "Active", render: (row) => (row.active ? "Yes" : "No") }
       ]}

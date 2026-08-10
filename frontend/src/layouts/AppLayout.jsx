@@ -3,6 +3,7 @@ import {
   Bell,
   Building2,
   CalendarRange,
+  ChartNoAxesCombined,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -15,6 +16,7 @@ import {
   ReceiptText,
   Settings2,
   Users,
+  WalletCards,
   X
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -40,16 +42,18 @@ const groups = [
   {
     label: "Finance",
     items: [
-      { label: "Accounting Entries", path: "/accounting", icon: FileSpreadsheet, roles: ["Admin", "Accounting"] },
+      { label: "Accounting Entries", path: "/accounting", icon: FileSpreadsheet, roles: ["Admin", "Accounting"], counter: "accounting" },
       { label: "Treasury", path: "/treasury", icon: Landmark, roles: ["Admin", "Treasury"], counter: "payable" },
+      { label: "Budget Control", path: "/budget", icon: WalletCards, roles: ["Admin", "Approver", "Accounting"] },
       { label: "Accounting Periods", path: "/accounting/periods", icon: CalendarRange, roles: ["Admin", "Accounting"] },
-      { label: "SIRE Export", path: "/accounting/sire", icon: FileSpreadsheet, roles: ["Admin", "Accounting"] }
+      { label: "SIRE Export", path: "/accounting/sire", icon: FileSpreadsheet, roles: ["Admin", "Accounting"] },
+      { label: "Management Reports", path: "/reports", icon: ChartNoAxesCombined, roles: ["Admin", "Approver", "Accounting", "Treasury"] }
     ]
   },
   {
     label: "Master Data",
     items: [
-      { label: "Suppliers", path: "/suppliers", icon: Building2, roles: ["Admin", "Accounting", "Treasury", "Solicitor"] },
+      { label: "Suppliers", path: "/suppliers", icon: Building2, roles: ["Admin", "Accounting", "Treasury", "Solicitor"], counter: "suppliers" },
       { label: "Cost Centers", path: "/cost-centers", icon: CircleDollarSign, roles: ["Admin", "Accounting"] },
       { label: "Expense Types", path: "/expense-types", icon: Settings2, roles: ["Admin", "Accounting"] },
       { label: "Exchange Rates", path: "/exchange-rates", icon: CircleDollarSign, roles: ["Admin", "Accounting"] }
@@ -69,6 +73,8 @@ const routeTitles = [
   [/^\/requests/, "Requests"],
   [/^\/approvals/, "Approval Inbox"],
   [/^\/treasury/, "Treasury Payment Queue"],
+  [/^\/budget/, "Budget Control"],
+  [/^\/reports/, "Management Reports"],
   [/^\/accounting\/periods/, "Accounting Periods"],
   [/^\/accounting\/sire/, "SIRE RCE Export"],
   [/^\/accounting/, "Accounting Entries"],

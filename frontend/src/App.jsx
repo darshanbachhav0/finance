@@ -16,6 +16,8 @@ import RequestsList from "./pages/RequestsList.jsx";
 import SireExport from "./pages/SireExport.jsx";
 import Suppliers from "./pages/Suppliers.jsx";
 import TreasuryQueue from "./pages/TreasuryQueue.jsx";
+import BudgetControl from "./pages/BudgetControl.jsx";
+import ManagementReports from "./pages/ManagementReports.jsx";
 
 export default function App() {
   return (
@@ -42,6 +44,12 @@ export default function App() {
           </Route>
           <Route path="treasury" element={<ProtectedRoute roles={["Admin", "Treasury"]} />}>
             <Route index element={<TreasuryQueue />} />
+          </Route>
+          <Route path="budget" element={<ProtectedRoute roles={["Admin", "Approver", "Accounting"]} />}>
+            <Route index element={<BudgetControl />} />
+          </Route>
+          <Route path="reports" element={<ProtectedRoute roles={["Admin", "Approver", "Accounting", "Treasury"]} />}>
+            <Route index element={<ManagementReports />} />
           </Route>
           <Route path="suppliers" element={<ProtectedRoute roles={["Admin", "Accounting", "Treasury", "Solicitor"]} />}>
             <Route index element={<Suppliers />} />

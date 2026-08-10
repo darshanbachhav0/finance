@@ -1,4 +1,4 @@
-import { REQUEST_STATUS, ROLES } from "./constants.js";
+import { APPROVAL_STAGES, REQUEST_STATUS, ROLES } from "./constants.js";
 
 export const SUPPLIER_VIEW_ROLES = [ROLES.ADMIN, ROLES.ACCOUNTING, ROLES.TREASURY, ROLES.SOLICITOR];
 export const REQUEST_CREATOR_ROLES = [ROLES.ADMIN, ROLES.SOLICITOR];
@@ -29,4 +29,11 @@ export function canViewRequest(request, user) {
   }
   if (user.role === ROLES.APPROVER) return request.status !== REQUEST_STATUS.DRAFT;
   return true;
+}
+
+export function canApproveStage(request, user) {
+  if (!request || !user) return false;
+  if (user.role === ROLES.ADMIN) return true;
+  if (user.role !== ROLES.APPROVER) return false;
+  return (user.approvalLevel || APPROVAL_STAGES.AREA_DIRECTOR) === (request.approvalStage || APPROVAL_STAGES.AREA_DIRECTOR);
 }

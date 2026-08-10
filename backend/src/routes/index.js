@@ -7,6 +7,8 @@ import requestRoutes from "./requestRoutes.js";
 import sireRoutes from "./sireRoutes.js";
 import supplierRoutes from "./supplierRoutes.js";
 import treasuryRoutes from "./treasuryRoutes.js";
+import budgetRoutes from "./budgetRoutes.js";
+import reportRoutes from "./reportRoutes.js";
 import userRoutes from "./userRoutes.js";
 import {
   accountingPeriodRouter,
@@ -23,6 +25,8 @@ router.use("/requests", requestRoutes);
 router.use("/approvals", approvalRoutes);
 router.use("/accounting", accountingRoutes);
 router.use("/treasury", treasuryRoutes);
+router.use("/budget", budgetRoutes);
+router.use("/reports", reportRoutes);
 router.use("/suppliers", supplierRoutes);
 router.use("/cost-centers", costCenterRouter);
 router.use("/expense-types", expenseTypeRouter);

@@ -49,7 +49,9 @@ export default function ApprovalInbox() {
     try {
       if (confirm.type === "approve") await api.post(`/approvals/${confirm.row._id}/approve`, { comments });
       else await api.post(`/approvals/${confirm.row._id}/reject`, { comments });
-      notify(confirm.type === "approve" ? "Request approved and provision entries generated." : "Request rejected and returned to the solicitor.");
+      notify(confirm.type === "approve"
+        ? confirm.row.approvalStage === "AREA_DIRECTOR" ? "Director approval recorded and sent to Vice Rector." : "Vice Rector approval recorded and budget commitment created."
+        : "Request rejected and returned to the solicitor.");
       setConfirm(null);
       await load();
     } catch (err) {
@@ -63,12 +65,15 @@ export default function ApprovalInbox() {
 
   function openDecision(row, type) {
     const approve = type === "approve";
+    const directorStage = row.approvalStage === "AREA_DIRECTOR";
     setConfirm({
       row,
       type,
       title: approve ? "Approve this request?" : "Reject this request?",
       description: approve
-        ? "Approval moves the request to the Treasury payable queue and creates provision accounting entries."
+        ? directorStage
+          ? "This records the Area Director electronic approval and sends the request to the Vice Rector stage."
+          : "This records the Vice Rector electronic approval and reserves the available budget before Accounting processing."
         : "Rejection returns the request to the solicitor for correction. A comment is required.",
       confirmLabel: approve ? "Approve request" : "Reject request",
       tone: approve ? "primary" : "danger",
@@ -78,7 +83,8 @@ export default function ApprovalInbox() {
         { label: "Request", value: row.requestNumber },
         { label: "Supplier", value: row.supplier?.name },
         { label: "Amount", value: `${row.currency} ${Number(row.totalAmount || 0).toFixed(2)}` },
-        { label: "Result", value: approve ? "Status changes to APROBADO_POR_PAGAR and provision entries are created." : "Status changes to RECHAZADO and editing is enabled for the solicitor." }
+        { label: "Approval level", value: row.approvalStage },
+        { label: "Result", value: approve ? directorStage ? "Status changes to APROBADO_DIRECTOR and the Vice Rector SLA starts." : "Budget is validated and reserved; the request moves to COMPROMISO_PRESUPUESTAL for Accounting." : "Status changes to RECHAZADO and editing is enabled for the solicitor." }
       ]
     });
   }
@@ -107,9 +113,11 @@ export default function ApprovalInbox() {
           columns={[
             { key: "requestNumber", label: "Request", render: (row) => <Link to={`/requests/${row._id}`}>{row.requestNumber}</Link> },
             { key: "requestType", label: "Type" },
+            { key: "priority", label: "Priority", render: (row) => <span className={`priority priority-${String(row.priority || "MEDIA").toLowerCase()}`}>{t(row.priority || "MEDIA")}</span> },
+            { key: "approvalStage", label: "Approval level", render: (row) => t(row.approvalStage || "AREA_DIRECTOR") },
             { key: "supplier", label: "Supplier", getValue: (row) => row.supplier?.name, render: (row) => <div className="primary-cell"><strong>{row.supplier?.name}</strong><span>{row.supplier?.rucDni}</span></div> },
             { key: "solicitor", label: "Solicitor", getValue: (row) => row.solicitor?.name, render: (row) => <div className="primary-cell"><strong>{row.solicitor?.name}</strong><span>{row.solicitor?.area}</span></div> },
-            { key: "createdAt", label: "Waiting since", render: (row) => <div className="primary-cell"><strong>{new Date(row.createdAt).toLocaleDateString()}</strong><span>{Math.max(0, Math.floor((Date.now() - new Date(row.createdAt).getTime()) / 86400000))} {t("days")}</span></div> },
+            { key: "approvalDueAt", label: "SLA due", render: (row) => <div className="primary-cell"><strong className={row.approvalDueAt && new Date(row.approvalDueAt) < new Date() ? "text-danger" : ""}>{row.approvalDueAt ? new Date(row.approvalDueAt).toLocaleString() : "-"}</strong><span>{row.approvalDueAt && new Date(row.approvalDueAt) < new Date() ? t("Overdue") : t("On time")}</span></div> },
             { key: "totalAmount", label: "Amount", align: "right", render: (row) => <strong>{row.currency} {Number(row.totalAmount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong> },
             { key: "status", label: "Status", render: (row) => <StatusBadge status={row.status} /> },
             { key: "decision", label: "Decision", sortable: false, render: (row) => <div className="row-actions"><button type="button" className="icon-button approve" title={t("Approve")} onClick={() => openDecision(row, "approve")}><CheckCircle2 size={17} /></button><button type="button" className="icon-button danger" title={t("Reject")} onClick={() => openDecision(row, "reject")}><XCircle size={17} /></button></div> }

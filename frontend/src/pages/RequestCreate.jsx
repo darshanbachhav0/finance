@@ -1,6 +1,6 @@
 import { AlertTriangle, ChevronLeft, ChevronRight, FileCheck2, FileText, Plus, Save, Send, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import api from "../api/client.js";
 import Message from "../components/Message.jsx";
 import PageHeader from "../components/PageHeader.jsx";
@@ -9,14 +9,54 @@ import WorkflowStepper from "../components/WorkflowStepper.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import { useToast } from "../context/ToastContext.jsx";
-import { currencies, requestTypes } from "../utils/options.js";
+import { currencies, expenseNatures, requestPriorities, requestTypes } from "../utils/options.js";
 
 const steps = ["Basic information", "Accounting lines", "Documents", "Review and submit"];
 const emptyLine = () => ({ clientId: `${Date.now()}-${Math.random()}`, costCenter: "", expenseType: "", netAmount: "", igvAmount: "", totalAmount: "" });
 
 function initialForm() {
   const today = new Date().toISOString().slice(0, 10);
-  return { requestType: "OPEX", issueDate: today, accountingPeriod: today.slice(0, 7), currency: "PEN", supplier: "", description: "" };
+  return {
+    requestType: "OPEX",
+    expenseNature: "Contratación de Servicios",
+    priority: "MEDIA",
+    schoolOrDepartment: "",
+    project: "",
+    issueDate: today,
+    accountingPeriod: today.slice(0, 7),
+    currency: "PEN",
+    supplier: "",
+    description: ""
+  };
+}
+
+const documentDefinitions = [
+  { key: "xml", kind: "XML", label: "Invoice XML", accept: ".xml" },
+  { key: "pdf", kind: "PDF", label: "Invoice / receipt PDF", accept: ".pdf" },
+  { key: "quotation", kind: "QUOTATION", label: "Quotations", accept: ".pdf,.doc,.docx,.xlsx,.jpg,.jpeg,.png", multiple: true },
+  { key: "purchaseOrder", kind: "PURCHASE_ORDER", label: "Purchase order", accept: ".pdf,.doc,.docx,.xlsx" },
+  { key: "contract", kind: "CONTRACT", label: "Signed contract", accept: ".pdf,.doc,.docx" },
+  { key: "conformity", kind: "CONFORMITY", label: "Conformity report", accept: ".pdf,.doc,.docx" },
+  { key: "activityReport", kind: "ACTIVITY_REPORT", label: "Activity report", accept: ".pdf,.doc,.docx" },
+  { key: "supporting", kind: "SUPPORTING", label: "Supporting documents", accept: ".pdf,.doc,.docx,.xlsx,.jpg,.jpeg,.png,.csv,.txt", multiple: true }
+];
+
+function requiredDocumentRules(form) {
+  const rules = [];
+  if ([requestTypes[3], requestTypes[5]].includes(form.requestType)) rules.push({ key: "xml", min: 1 }, { key: "pdf", min: 1 });
+  const byNature = {
+    "Compra de Bienes": [{ key: "quotation", min: 3 }, { key: "pdf", min: 1 }],
+    "Contratación de Servicios": [{ key: "pdf", min: 1 }, { key: "contract", min: 1 }, { key: "conformity", min: 1 }],
+    "Honorarios Profesionales": [{ key: "pdf", min: 1 }, { key: "contract", min: 1 }, { key: "activityReport", min: 1 }],
+    "Caja Chica": [{ key: "supporting", min: 1 }],
+    "Reembolso / Liquidación": [{ key: "supporting", min: 1 }]
+  };
+  for (const rule of byNature[form.expenseNature] || []) {
+    const current = rules.find((item) => item.key === rule.key);
+    if (current) current.min = Math.max(current.min, rule.min);
+    else rules.push(rule);
+  }
+  return rules;
 }
 
 export default function RequestCreate() {
@@ -30,7 +70,7 @@ export default function RequestCreate() {
   const [masters, setMasters] = useState({ suppliers: [], costCenters: [], expenseTypes: [] });
   const [form, setForm] = useState(initialForm);
   const [lines, setLines] = useState([emptyLine()]);
-  const [files, setFiles] = useState({ xml: [], pdf: [], quotation: [], supporting: [] });
+  const [files, setFiles] = useState(Object.fromEntries(documentDefinitions.map((item) => [item.key, []])));
   const [existingAttachments, setExistingAttachments] = useState([]);
   const [step, setStep] = useState(0);
   const [maxStep, setMaxStep] = useState(0);
@@ -63,6 +103,10 @@ export default function RequestCreate() {
           }
           const serverForm = {
             requestType: request.requestType,
+            expenseNature: request.expenseNature || "Contratación de Servicios",
+            priority: request.priority || "MEDIA",
+            schoolOrDepartment: request.schoolOrDepartment || "",
+            project: request.project || "",
             issueDate: request.issueDate.slice(0, 10),
             accountingPeriod: request.accountingPeriod,
             currency: request.currency,
@@ -114,7 +158,8 @@ export default function RequestCreate() {
   }, [form, lines, hydrated, draftKey, language]);
 
   const selectedSupplier = masters.suppliers.find((supplier) => supplier._id === form.supplier);
-  const mandatoryDocuments = [requestTypes[3], requestTypes[5]].includes(form.requestType);
+  const documentRules = useMemo(() => requiredDocumentRules(form), [form.requestType, form.expenseNature]);
+  const mandatoryDocuments = documentRules.length > 0;
   const totals = useMemo(() => lines.reduce((result, line) => ({
     net: result.net + Number(line.netAmount || 0),
     igv: result.igv + Number(line.igvAmount || 0),
@@ -133,7 +178,7 @@ export default function RequestCreate() {
   function validateStep(index, submitting = false) {
     const next = {};
     if (index === 0) {
-      ["requestType", "issueDate", "accountingPeriod", "currency", "supplier", "description"].forEach((field) => {
+      ["requestType", "expenseNature", "priority", "issueDate", "accountingPeriod", "currency", "supplier", "description"].forEach((field) => {
         if (!String(form[field] || "").trim()) next[field] = "This field is required.";
       });
       if (form.accountingPeriod && !/^\d{4}-\d{2}$/.test(form.accountingPeriod)) next.accountingPeriod = "Use YYYY-MM format.";
@@ -148,11 +193,12 @@ export default function RequestCreate() {
         if (line.totalAmount === "" || Number(line.totalAmount) <= 0) next[`lines.${lineIndex}.totalAmount`] = "Total must be greater than zero.";
       });
     }
-    if (index === 2 && submitting && mandatoryDocuments) {
-      const hasXml = existingAttachments.some((item) => item.kind === "XML") || files.xml.length > 0;
-      const hasPdf = existingAttachments.some((item) => item.kind === "PDF") || files.pdf.length > 0;
-      if (!hasXml) next.xml = "XML is required for this request type.";
-      if (!hasPdf) next.pdf = "PDF is required for this request type.";
+    if (index === 2 && submitting) {
+      documentRules.forEach((rule) => {
+        const definition = documentDefinitions.find((item) => item.key === rule.key);
+        const count = existingAttachments.filter((item) => item.kind === definition.kind).length + files[rule.key].length;
+        if (count < rule.min) next[rule.key] = `${definition.label}: ${rule.min} required.`;
+      });
     }
     setErrors((current) => ({ ...current, ...next }));
     return Object.keys(next).length === 0;
@@ -231,6 +277,11 @@ export default function RequestCreate() {
               <div className="section-heading"><div><h3 id="basic-heading">{t("Basic information")}</h3><p>{t("Identify the supplier, request type, period, and purpose.")}</p></div></div>
               <div className="form-grid two-column-form">
                 <label className={`field${fieldError("requestType") ? " field-error" : ""}`}><span>{t("Request type")} *</span><select value={form.requestType} onChange={(event) => setForm({ ...form, requestType: event.target.value })}>{requestTypes.map((type) => <option key={type} value={type}>{t(type)}</option>)}</select>{fieldError("requestType") && <small className="field-error-text">{t(fieldError("requestType"))}</small>}</label>
+                <label className="field"><span>{t("Expense nature")} *</span><select value={form.expenseNature} onChange={(event) => setForm({ ...form, expenseNature: event.target.value })}>{expenseNatures.map((item) => <option key={item} value={item}>{t(item)}</option>)}</select></label>
+                <label className="field"><span>{t("Priority")} *</span><select value={form.priority} onChange={(event) => setForm({ ...form, priority: event.target.value })}>{requestPriorities.map((item) => <option key={item} value={item}>{t(item)}</option>)}</select></label>
+                <label className="field"><span>{t("Requesting area")}</span><input value={user.area || "General"} disabled title={t("Assigned from the signed-in user profile.")} /></label>
+                <label className="field"><span>{t("School / department")}</span><input value={form.schoolOrDepartment} onChange={(event) => setForm({ ...form, schoolOrDepartment: event.target.value })} /></label>
+                <label className="field"><span>{t("Project")}</span><input value={form.project} onChange={(event) => setForm({ ...form, project: event.target.value })} placeholder={t("Optional project code or name")} /></label>
                 <label className={`field${fieldError("issueDate") ? " field-error" : ""}`}><span>{t("Issue date")} *</span><input type="date" value={form.issueDate} onChange={(event) => setForm({ ...form, issueDate: event.target.value, accountingPeriod: event.target.value.slice(0, 7) })} />{fieldError("issueDate") && <small className="field-error-text">{t(fieldError("issueDate"))}</small>}</label>
                 <label className={`field${fieldError("accountingPeriod") ? " field-error" : ""}`}><span>{t("Accounting period")} *</span><input type="month" value={form.accountingPeriod} onChange={(event) => setForm({ ...form, accountingPeriod: event.target.value })} />{fieldError("accountingPeriod") && <small className="field-error-text">{t(fieldError("accountingPeriod"))}</small>}<small className="field-hint">{t("Closed periods cannot be used.")}</small></label>
                 <label className="field"><span>{t("Currency")} *</span><select value={form.currency} onChange={(event) => setForm({ ...form, currency: event.target.value })}>{currencies.map((currency) => <option key={currency}>{currency}</option>)}</select><small className="field-hint">{form.currency === "USD" ? t("A SUNAT selling rate is required for this date or period.") : t("Exchange rate is fixed at 1.00.")}</small></label>
@@ -245,6 +296,7 @@ export default function RequestCreate() {
                     required
                     searchPlaceholder="Search by supplier name or RUC/DNI..."
                   />
+                  <Link className="inline-link" to="/suppliers">{t("Supplier not found? Register it for homologation")}</Link>
                   {selectedSupplier && (!selectedSupplier.cci && !selectedSupplier.bankAccount) && <div className="inline-warning"><AlertTriangle size={16} /><span>{t("This supplier has no bank account or CCI. Treasury will not be able to generate payment.")}</span></div>}
                 </div>
                 <label className={`field form-span-two${fieldError("description") ? " field-error" : ""}`}><span>{t("Description")} *</span><textarea rows="4" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} placeholder={t("Describe the business purpose and what is being paid.")} />{fieldError("description") && <small className="field-error-text">{t(fieldError("description"))}</small>}</label>
@@ -283,20 +335,16 @@ export default function RequestCreate() {
 
           {step === 2 && (
             <div className="wizard-step" aria-labelledby="documents-heading">
-              <div className="section-heading"><div><h3 id="documents-heading">{t("Documents")}</h3><p>{t(mandatoryDocuments ? "XML and PDF are required for this request type before submission." : "Attach the documents needed to support this request.")}</p></div></div>
-              <div className={`document-requirement ${mandatoryDocuments ? "required" : "optional"}`}><FileText size={20} /><div><strong>{t(mandatoryDocuments ? "Mandatory invoice validation" : "Supporting documentation")}</strong><p>{t(mandatoryDocuments ? "The XML supplier RUC/DNI and amounts will be checked against this request. The PDF is also required." : "XML and PDF are optional for this request type. Add quotations or other support when applicable.")}</p></div></div>
+              <div className="section-heading"><div><h3 id="documents-heading">{t("Documents")}</h3><p>{t(mandatoryDocuments ? "Required documents are determined by the request type and expense nature." : "Attach the documents needed to support this request.")}</p></div></div>
+              <div className={`document-requirement ${mandatoryDocuments ? "required" : "optional"}`}><FileText size={20} /><div><strong>{t(mandatoryDocuments ? "Mandatory document checklist" : "Supporting documentation")}</strong><p>{mandatoryDocuments ? documentRules.map((rule) => { const definition = documentDefinitions.find((item) => item.key === rule.key); return `${t(definition.label)}${rule.min > 1 ? ` × ${rule.min}` : ""}`; }).join(" · ") : t("Add quotations or other support when applicable.")}</p></div></div>
               <div className="document-grid">
-                {[
-                  { key: "xml", label: "Invoice XML", accept: ".xml", multiple: false, required: mandatoryDocuments },
-                  { key: "pdf", label: "Invoice PDF", accept: ".pdf", multiple: false, required: mandatoryDocuments },
-                  { key: "quotation", label: "Quotations", accept: ".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png", multiple: true },
-                  { key: "supporting", label: "Supporting documents", accept: ".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,.csv,.txt", multiple: true }
-                ].map((document) => {
-                  const existing = existingAttachments.filter((item) => item.kind === document.key.toUpperCase() || (document.key === "quotation" && item.kind === "QUOTATION") || (document.key === "supporting" && item.kind === "SUPPORTING"));
+                {documentDefinitions.map((document) => {
+                  const rule = documentRules.find((item) => item.key === document.key);
+                  const existing = existingAttachments.filter((item) => item.kind === document.kind);
                   return (
                     <label className={`document-upload${fieldError(document.key) ? " field-error" : ""}`} key={document.key}>
                       <FileText size={22} />
-                      <span><strong>{t(document.label)}{document.required ? " *" : ""}</strong><small>{t("Choose file")}</small></span>
+                      <span><strong>{t(document.label)}{rule ? ` *${rule.min > 1 ? ` (${rule.min})` : ""}` : ""}</strong><small>{t("Choose file")}</small></span>
                       <input type="file" accept={document.accept} multiple={document.multiple} onChange={(event) => appendFiles(document.key, event.target.files)} />
                       <div className="file-list">
                         {existing.map((file) => <span key={file._id}>{file.originalName} · {t("Already uploaded")}</span>)}
@@ -314,7 +362,7 @@ export default function RequestCreate() {
             <div className="wizard-step" aria-labelledby="review-heading">
               <div className="section-heading"><div><h3 id="review-heading">{t("Review and submit")}</h3><p>{t("Confirm the request details before sending it into the approval workflow.")}</p></div></div>
               <div className="review-layout">
-                <div className="review-section"><div className="section-heading compact"><h3>{t("Basic information")}</h3><button type="button" className="text-button" onClick={() => goToStep(0)}>{t("Edit")}</button></div><dl className="detail-grid"><div><dt>{t("Request type")}</dt><dd>{t(form.requestType)}</dd></div><div><dt>{t("Supplier")}</dt><dd>{selectedSupplier ? `${selectedSupplier.rucDni} · ${selectedSupplier.name}` : "-"}</dd></div><div><dt>{t("Issue date")}</dt><dd>{form.issueDate}</dd></div><div><dt>{t("Accounting period")}</dt><dd>{form.accountingPeriod}</dd></div><div><dt>{t("Currency")}</dt><dd>{form.currency}</dd></div><div className="wide"><dt>{t("Description")}</dt><dd>{form.description}</dd></div></dl></div>
+                <div className="review-section"><div className="section-heading compact"><h3>{t("Basic information")}</h3><button type="button" className="text-button" onClick={() => goToStep(0)}>{t("Edit")}</button></div><dl className="detail-grid"><div><dt>{t("Request type")}</dt><dd>{t(form.requestType)}</dd></div><div><dt>{t("Expense nature")}</dt><dd>{t(form.expenseNature)}</dd></div><div><dt>{t("Priority")}</dt><dd>{t(form.priority)}</dd></div><div><dt>{t("Supplier")}</dt><dd>{selectedSupplier ? `${selectedSupplier.rucDni} · ${selectedSupplier.name}` : "-"}</dd></div><div><dt>{t("School / department")}</dt><dd>{form.schoolOrDepartment || "-"}</dd></div><div><dt>{t("Project")}</dt><dd>{form.project || "-"}</dd></div><div><dt>{t("Issue date")}</dt><dd>{form.issueDate}</dd></div><div><dt>{t("Accounting period")}</dt><dd>{form.accountingPeriod}</dd></div><div><dt>{t("Currency")}</dt><dd>{form.currency}</dd></div><div className="wide"><dt>{t("Description")}</dt><dd>{form.description}</dd></div></dl></div>
                 <div className="review-section"><div className="section-heading compact"><h3>{t("Accounting lines")}</h3><button type="button" className="text-button" onClick={() => goToStep(1)}>{t("Edit")}</button></div><div className="review-lines">{lines.map((line, index) => { const costCenter = masters.costCenters.find((item) => item._id === line.costCenter); const expense = masters.expenseTypes.find((item) => item._id === line.expenseType); return <div key={line.clientId}><span>{index + 1}</span><div><strong>{costCenter?.code} · {costCenter?.name}</strong><small>{expense?.accountNumber} · {expense?.name}</small></div><strong>{form.currency} {Number(line.totalAmount || 0).toFixed(2)}</strong></div>; })}</div><div className="review-total"><span>{t("Total amount")}</span><strong>{form.currency} {totals.total.toFixed(2)}</strong></div></div>
                 <div className="review-section"><div className="section-heading compact"><h3>{t("Documents")}</h3><button type="button" className="text-button" onClick={() => goToStep(2)}>{t("Edit")}</button></div><div className="review-documents">{existingAttachments.map((file) => <span key={file._id}><FileText size={15} />{file.kind}: {file.originalName}</span>)}{Object.entries(files).flatMap(([kind, selectedFiles]) => selectedFiles.map((file) => <span key={`${kind}-${file.name}`}><FileText size={15} />{kind.toUpperCase()}: {file.name}</span>))}{!existingAttachments.length && !Object.values(files).some((selectedFiles) => selectedFiles.length) && <p>{t("No files attached.")}</p>}</div></div>
               </div>

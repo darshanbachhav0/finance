@@ -8,15 +8,15 @@ import ExpenseType from "../models/ExpenseType.js";
 import Supplier from "../models/Supplier.js";
 import User from "../models/User.js";
 import { connectDB } from "../config/db.js";
-import { ROLES } from "../utils/constants.js";
+import { APPROVAL_STAGES, ROLES } from "../utils/constants.js";
 
 dotenv.config();
 
-async function upsertUser({ name, email, password, role, area }) {
+async function upsertUser({ name, email, password, role, approvalLevel, area }) {
   const passwordHash = await bcrypt.hash(password, 10);
   return User.findOneAndUpdate(
     { email },
-    { name, email, passwordHash, role, area, active: true },
+    { name, email, passwordHash, role, approvalLevel, area, active: true },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
 }
@@ -27,7 +27,8 @@ async function seed() {
   const users = await Promise.all([
     upsertUser({ name: "ERP Admin", email: "admin@erp.local", password: "Admin123!", role: ROLES.ADMIN, area: "Systems" }),
     upsertUser({ name: "Solicitor User", email: "solicitor@erp.local", password: "User123!", role: ROLES.SOLICITOR, area: "Operations" }),
-    upsertUser({ name: "Approver Manager", email: "approver@erp.local", password: "Approver123!", role: ROLES.APPROVER, area: "Management" }),
+    upsertUser({ name: "Area Director", email: "approver@erp.local", password: "Approver123!", role: ROLES.APPROVER, approvalLevel: APPROVAL_STAGES.AREA_DIRECTOR, area: "Management" }),
+    upsertUser({ name: "Vice Rector Approver", email: "vicerector@erp.local", password: "Approver123!", role: ROLES.APPROVER, approvalLevel: APPROVAL_STAGES.VICE_RECTOR, area: "Rectorate" }),
     upsertUser({ name: "Accounting Analyst", email: "accounting@erp.local", password: "Accounting123!", role: ROLES.ACCOUNTING, area: "Accounting" }),
     upsertUser({ name: "Treasury Analyst", email: "treasury@erp.local", password: "Treasury123!", role: ROLES.TREASURY, area: "Treasury" })
   ]);
@@ -79,14 +80,20 @@ async function seed() {
     {
       updateOne: {
         filter: { code: "CC-ADM-001" },
-        update: { $set: { code: "CC-ADM-001", name: "Administration", area: "Corporate", annualBudget: 250000, executedAmount: 42000, availableAmount: 208000, active: true } },
+        update: {
+          $set: { name: "Administration", area: "Corporate", budgetMode: "ACTIVE", active: true },
+          $setOnInsert: { code: "CC-ADM-001", annualBudget: 250000, committedAmount: 0, executedAmount: 42000, paidAmount: 42000, availableAmount: 208000 }
+        },
         upsert: true
       }
     },
     {
       updateOne: {
         filter: { code: "CC-OPS-010" },
-        update: { $set: { code: "CC-OPS-010", name: "Operations Lima", area: "Operations", annualBudget: 500000, executedAmount: 118500, availableAmount: 381500, active: true } },
+        update: {
+          $set: { name: "Operations Lima", area: "Operations", budgetMode: "ACTIVE", active: true },
+          $setOnInsert: { code: "CC-OPS-010", annualBudget: 500000, committedAmount: 0, executedAmount: 118500, paidAmount: 118500, availableAmount: 381500 }
+        },
         upsert: true
       }
     }
@@ -116,10 +123,16 @@ async function seed() {
     }
   ]);
 
-  await AccountingPeriod.findOneAndUpdate(
-    { period: "2026-07" },
-    { period: "2026-07", status: "OPEN" },
-    { upsert: true, new: true }
+  const now = new Date();
+  const currentPeriod = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+  await Promise.all(
+    ["2026-07", currentPeriod].map((period) =>
+      AccountingPeriod.findOneAndUpdate(
+        { period },
+        { $setOnInsert: { period, status: "OPEN" } },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      )
+    )
   );
 
   await ExchangeRate.findOneAndUpdate(

@@ -7,6 +7,7 @@ import {
   listRequests,
   submitRequest,
   updateRequest,
+  voidRequest,
   uploadRendition
 } from "../controllers/requestController.js";
 import { authorize, protect } from "../middleware/auth.js";
@@ -22,5 +23,6 @@ router.route("/:id").get(getRequest).put(uploadFields, updateRequest).delete(del
 router.post("/:id/submit", submitRequest);
 router.post("/:id/rendition", uploadFields, uploadRendition);
 router.post("/:id/close", authorize(ROLES.ADMIN, ROLES.ACCOUNTING), closeRequest);
+router.post("/:id/void", authorize(ROLES.ADMIN, ROLES.ACCOUNTING), voidRequest);
 
 export default router;

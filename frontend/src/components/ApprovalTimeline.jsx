@@ -21,6 +21,7 @@ export default function ApprovalTimeline({ history = [] }) {
             <small>
               {item.actor?.name || t("System")} · {new Date(item.createdAt).toLocaleString()}
             </small>
+            {(item.stage || item.signature || item.ip) && <small className="timeline-evidence">{[item.stage && t(item.stage), item.signature, item.ip].filter(Boolean).join(" · ")}</small>}
           </div>
         </div>
       ))}

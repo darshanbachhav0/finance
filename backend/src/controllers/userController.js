@@ -9,7 +9,7 @@ export const listUsers = asyncHandler(async (_req, res) => {
 });
 
 export const createUser = asyncHandler(async (req, res) => {
-  const { name, email, password, role, area, active } = req.body;
+  const { name, email, password, role, approvalLevel, costCenter, area, active } = req.body;
   if (!name || !email || !password || !role) {
     throw new AppError(400, "Name, email, password, and role are required.");
   }
@@ -20,6 +20,8 @@ export const createUser = asyncHandler(async (req, res) => {
     name,
     email,
     role,
+    approvalLevel,
+    costCenter: costCenter || undefined,
     area,
     active,
     passwordHash: await bcrypt.hash(password, 10)

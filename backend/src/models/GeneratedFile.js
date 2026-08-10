@@ -13,7 +13,7 @@ const generatedFileSchema = new mongoose.Schema(
   {
     kind: {
       type: String,
-      enum: ["BANK_TXT", "CONSOLIDATION_CSV", "SIRE_CSV"],
+      enum: ["BANK_TXT", "CONSOLIDATION_CSV", "SIRE_CSV", "MANAGEMENT_CSV"],
       required: true,
       index: true
     },

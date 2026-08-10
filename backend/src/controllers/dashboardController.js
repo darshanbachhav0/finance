@@ -6,7 +6,7 @@ import GeneratedFile from "../models/GeneratedFile.js";
 import Supplier from "../models/Supplier.js";
 import User from "../models/User.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
-import { REQUEST_STATUS, ROLES } from "../utils/constants.js";
+import { APPROVAL_STAGES, REQUEST_STATUS, ROLES } from "../utils/constants.js";
 
 const populatedRequest = [
   { path: "supplier", select: "name rucDni bankName bankAccount cci status" },
@@ -37,8 +37,16 @@ async function buildTasks(user) {
   const definitions = [];
 
   if ([ROLES.ADMIN, ROLES.APPROVER].includes(user.role)) {
-    taskQueries.push(FinancialRequest.countDocuments({ status: REQUEST_STATUS.PENDING_APPROVAL }));
+    const approvalQuery = { status: { $in: [REQUEST_STATUS.PENDING_APPROVAL, REQUEST_STATUS.DIRECTOR_APPROVED] } };
+    if (user.role === ROLES.APPROVER) {
+      const level = user.approvalLevel || APPROVAL_STAGES.AREA_DIRECTOR;
+      if (level === APPROVAL_STAGES.AREA_DIRECTOR) approvalQuery.$or = [{ approvalStage: level }, { approvalStage: { $exists: false } }];
+      else approvalQuery.approvalStage = level;
+    }
+    taskQueries.push(FinancialRequest.countDocuments(approvalQuery));
     definitions.push({ key: "approval", label: "Requests awaiting approval", path: "/approvals", tone: "amber" });
+    taskQueries.push(FinancialRequest.countDocuments({ ...approvalQuery, approvalDueAt: { $lt: new Date() } }));
+    definitions.push({ key: "approvalOverdue", label: "Approval SLA overdue", path: "/approvals", tone: "red" });
   }
   if ([ROLES.ADMIN, ROLES.TREASURY].includes(user.role)) {
     taskQueries.push(FinancialRequest.countDocuments({ status: REQUEST_STATUS.APPROVED_PAYABLE }));
@@ -49,6 +57,12 @@ async function buildTasks(user) {
     if (user.role === ROLES.SOLICITOR) query.solicitor = user._id;
     taskQueries.push(FinancialRequest.countDocuments(query));
     definitions.push({ key: "rendition", label: "Renditions outstanding", path: "/requests?status=RENDICION_PENDIENTE", tone: "amber" });
+  }
+  if ([ROLES.ADMIN, ROLES.ACCOUNTING].includes(user.role)) {
+    taskQueries.push(FinancialRequest.countDocuments({ status: REQUEST_STATUS.BUDGET_COMMITTED }));
+    definitions.push({ key: "accounting", label: "Requests awaiting fiscal processing", path: "/accounting", tone: "teal" });
+    taskQueries.push(Supplier.countDocuments({ status: "PENDING_VALIDATION" }));
+    definitions.push({ key: "suppliers", label: "Suppliers awaiting homologation", path: "/suppliers", tone: "amber" });
   }
 
   const counts = await Promise.all(taskQueries);
@@ -114,7 +128,7 @@ async function roleDetails(user, common) {
     ]);
     metrics.push(
       { key: "total", label: "Total requests", value: common.total, tone: "navy" },
-      { key: "pending", label: "Pending approval", value: countStatus(common.byStatus, REQUEST_STATUS.PENDING_APPROVAL), tone: "amber" },
+      { key: "pending", label: "Pending approval", value: countStatus(common.byStatus, REQUEST_STATUS.PENDING_APPROVAL) + countStatus(common.byStatus, REQUEST_STATUS.DIRECTOR_APPROVED), tone: "amber" },
       { key: "payable", label: "Approved / payable", value: countStatus(common.byStatus, REQUEST_STATUS.APPROVED_PAYABLE), tone: "teal" },
       { key: "users", label: "Active users", value: activeUsers, tone: "green" },
       { key: "closed", label: "Closed requests", value: countStatus(common.byStatus, REQUEST_STATUS.CLOSED), tone: "neutral" }
@@ -128,20 +142,24 @@ async function roleDetails(user, common) {
     metrics.push(
       { key: "drafts", label: "My drafts", value: countStatus(common.byStatus, REQUEST_STATUS.DRAFT), tone: "neutral" },
       { key: "rejected", label: "Rejected requests", value: countStatus(common.byStatus, REQUEST_STATUS.REJECTED), tone: "red" },
-      { key: "pending", label: "Pending approval", value: countStatus(common.byStatus, REQUEST_STATUS.PENDING_APPROVAL), tone: "amber" },
+      { key: "pending", label: "Pending approval", value: countStatus(common.byStatus, REQUEST_STATUS.PENDING_APPROVAL) + countStatus(common.byStatus, REQUEST_STATUS.DIRECTOR_APPROVED), tone: "amber" },
       { key: "rendition", label: "Rendition tasks", value: countStatus(common.byStatus, REQUEST_STATUS.RENDITION_PENDING), tone: "teal" },
       { key: "closed", label: "Completed requests", value: countStatus(common.byStatus, REQUEST_STATUS.CLOSED), tone: "green" }
     );
   }
 
   if (user.role === ROLES.APPROVER) {
+    const level = user.approvalLevel || APPROVAL_STAGES.AREA_DIRECTOR;
+    const approvalQuery = { status: { $in: [REQUEST_STATUS.PENDING_APPROVAL, REQUEST_STATUS.DIRECTOR_APPROVED] } };
+    if (level === APPROVAL_STAGES.AREA_DIRECTOR) approvalQuery.$or = [{ approvalStage: level }, { approvalStage: { $exists: false } }];
+    else approvalQuery.approvalStage = level;
     const [waitingTotals, oldest, decisions] = await Promise.all([
       FinancialRequest.aggregate([
-        { $match: { status: REQUEST_STATUS.PENDING_APPROVAL } },
+        { $match: approvalQuery },
         { $group: { _id: null, amount: { $sum: "$penEquivalent" }, count: { $sum: 1 } } }
       ]),
-      FinancialRequest.find({ status: REQUEST_STATUS.PENDING_APPROVAL }).populate(populatedRequest).sort({ createdAt: 1 }).limit(6),
-      FinancialRequest.find({ approvalHistory: { $elemMatch: { actor: user._id, action: { $in: ["APPROVED", "REJECTED"] } } } })
+      FinancialRequest.find(approvalQuery).populate(populatedRequest).sort({ approvalDueAt: 1 }).limit(6),
+      FinancialRequest.find({ approvalHistory: { $elemMatch: { actor: user._id, action: { $in: ["DIRECTOR_APPROVED", "VICE_RECTOR_APPROVED", "REJECTED"] } } } })
         .populate(populatedRequest)
         .sort({ updatedAt: -1 })
         .limit(6)

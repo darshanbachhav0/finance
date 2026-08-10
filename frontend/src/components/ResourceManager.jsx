@@ -11,7 +11,7 @@ import PageHeader from "./PageHeader.jsx";
 import StatusBadge from "./StatusBadge.jsx";
 
 function defaultValue(fields) {
-  return Object.fromEntries(fields.map((field) => [field.name, field.defaultValue ?? (field.type === "checkbox" ? false : "")]));
+  return Object.fromEntries(fields.map((field) => [field.name, field.defaultValue ?? (field.type === "checkbox" ? false : field.type === "file" ? [] : "")]));
 }
 
 export default function ResourceManager({
@@ -22,6 +22,9 @@ export default function ResourceManager({
   columns,
   transformSubmit,
   readOnly = false,
+  allowCreate,
+  allowEdit,
+  allowDelete,
   deleteMode = "delete",
   duplicateFields = [],
   confirmSubmit,
@@ -41,6 +44,9 @@ export default function ResourceManager({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [fieldErrors, setFieldErrors] = useState({});
+  const canCreate = allowCreate ?? !readOnly;
+  const canEdit = allowEdit ?? !readOnly;
+  const canDelete = allowDelete ?? !readOnly;
 
   async function load() {
     setLoading(true);
@@ -67,8 +73,10 @@ export default function ResourceManager({
   function startEdit(row) {
     const next = {};
     fields.forEach((field) => {
-      if (field.type === "date" && row[field.name]) next[field.name] = row[field.name].slice(0, 10);
-      else next[field.name] = row[field.name] ?? field.defaultValue ?? "";
+      const rowValue = field.getValue ? field.getValue(row) : row[field.name];
+      if (field.type === "file") next[field.name] = [];
+      else if (field.type === "date" && rowValue) next[field.name] = rowValue.slice(0, 10);
+      else next[field.name] = rowValue ?? field.defaultValue ?? "";
     });
     setEditing(row);
     setForm(next);
@@ -101,8 +109,19 @@ export default function ResourceManager({
     setError("");
     try {
       const payload = transformSubmit ? transformSubmit(form) : form;
-      if (editing) await api.put(`${endpoint}/${editing._id}`, payload);
-      else await api.post(endpoint, payload);
+      const multipart = fields.some((field) => field.type === "file");
+      let requestPayload = payload;
+      let config;
+      if (multipart) {
+        requestPayload = new FormData();
+        Object.entries(payload).forEach(([key, value]) => {
+          if (Array.isArray(value)) value.forEach((item) => requestPayload.append(key, item));
+          else if (value !== undefined && value !== null) requestPayload.append(key, value);
+        });
+        config = { headers: { "Content-Type": "multipart/form-data" } };
+      }
+      if (editing) await api.put(`${endpoint}/${editing._id}`, requestPayload, config);
+      else await api.post(endpoint, requestPayload, config);
       notify(editing ? "Record updated." : "Record created.");
       setDrawerOpen(false);
       setConfirm(null);
@@ -147,8 +166,8 @@ export default function ResourceManager({
     if (rows.some((row) => typeof row.active === "boolean")) {
       return [{ key: "active", label: "status", allLabel: "All statuses", options: [{ value: "true", label: "Active" }, { value: "false", label: "Inactive" }] }];
     }
-    if (rows.some((row) => ["ACTIVE", "INACTIVE"].includes(row.status))) {
-      return [{ key: "status", label: "status", allLabel: "All statuses", options: ["ACTIVE", "INACTIVE"] }];
+    if (rows.some((row) => typeof row.status === "string")) {
+      return [{ key: "status", label: "status", allLabel: "All statuses", options: [...new Set(rows.map((row) => row.status).filter(Boolean))] }];
     }
     return [];
   }, [rows]);
@@ -161,8 +180,8 @@ export default function ResourceManager({
 
   const actions = (row) => [
     ...(renderDetails ? [{ label: "View details", icon: Eye, onClick: () => setDetailRow(row) }] : []),
-    ...(!readOnly ? [
-      { label: "Edit", icon: Pencil, onClick: () => startEdit(row) },
+    ...(canEdit ? [{ label: "Edit", icon: Pencil, onClick: () => startEdit(row) }] : []),
+    ...(canDelete ? [
       {
         label: deleteMode === "deactivate" ? "Deactivate" : "Delete permanently",
         icon: Trash2,
@@ -185,7 +204,7 @@ export default function ResourceManager({
       <PageHeader
         title={title}
         description={description}
-        actions={!readOnly && (
+        actions={canCreate && (
           <>
             {renderHeaderActions?.({ rows, startCreate, startEdit })}
             <button type="button" className="primary-button" onClick={() => startCreate()}><Plus size={16} /><span>{t("New record")}</span></button>
@@ -223,6 +242,8 @@ export default function ResourceManager({
                   <input type="checkbox" checked={Boolean(form[field.name])} onChange={(event) => setForm({ ...form, [field.name]: event.target.checked })} />
                   <span>{t(form[field.name] ? "Active" : "Inactive")}</span>
                 </span>
+              ) : field.type === "file" ? (
+                <><input type="file" accept={field.accept} multiple={field.multiple} onChange={(event) => setForm({ ...form, [field.name]: Array.from(event.target.files || []) })} /><small className="field-hint">{form[field.name]?.map((file) => file.name).join(", ") || t(field.placeholder || "Choose file")}</small></>
               ) : (
                 <input
                   type={field.type || "text"}

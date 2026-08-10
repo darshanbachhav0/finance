@@ -1,5 +1,12 @@
 import mongoose from "mongoose";
-import { CURRENCY, REQUEST_STATUS, REQUEST_TYPES } from "../utils/constants.js";
+import {
+  APPROVAL_STAGES,
+  CURRENCY,
+  EXPENSE_NATURES,
+  REQUEST_PRIORITIES,
+  REQUEST_STATUS,
+  REQUEST_TYPES
+} from "../utils/constants.js";
 
 const lineSchema = new mongoose.Schema(
   {
@@ -15,7 +22,11 @@ const lineSchema = new mongoose.Schema(
 
 const attachmentSchema = new mongoose.Schema(
   {
-    kind: { type: String, enum: ["XML", "PDF", "QUOTATION", "SUPPORTING", "RENDITION"], required: true },
+    kind: {
+      type: String,
+      enum: ["XML", "PDF", "QUOTATION", "PURCHASE_ORDER", "CONTRACT", "CONFORMITY", "ACTIVITY_REPORT", "SUPPORTING", "RENDITION"],
+      required: true
+    },
     originalName: String,
     filename: String,
     path: String,
@@ -36,6 +47,10 @@ const approvalHistorySchema = new mongoose.Schema(
     actor: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     role: String,
     comments: String,
+    ip: String,
+    signature: String,
+    stage: String,
+    dueAt: Date,
     createdAt: { type: Date, default: Date.now }
   },
   { _id: true }
@@ -63,6 +78,11 @@ const financialRequestSchema = new mongoose.Schema(
   {
     requestNumber: { type: String, unique: true },
     requestType: { type: String, enum: REQUEST_TYPES, required: true },
+    expenseNature: { type: String, enum: EXPENSE_NATURES, default: "Contratación de Servicios" },
+    priority: { type: String, enum: REQUEST_PRIORITIES, default: "MEDIA" },
+    requestingArea: { type: String, trim: true },
+    schoolOrDepartment: { type: String, trim: true },
+    project: { type: String, trim: true },
     issueDate: { type: Date, required: true },
     accountingPeriod: { type: String, required: true, match: /^\d{4}-\d{2}$/ },
     currency: { type: String, enum: CURRENCY, required: true },
@@ -89,12 +109,35 @@ const financialRequestSchema = new mongoose.Schema(
     attachments: [attachmentSchema],
     xmlValidation: { type: xmlValidationSchema, default: () => ({}) },
     approvalHistory: [approvalHistorySchema],
+    approvalStage: { type: String, enum: Object.values(APPROVAL_STAGES), default: APPROVAL_STAGES.AREA_DIRECTOR },
+    approvalDueAt: Date,
     rejectionReason: String,
+    budgetCommitment: { type: mongoose.Schema.Types.ObjectId, ref: "BudgetCommitment" },
+    fiscalData: {
+      documentType: { type: String, trim: true },
+      series: { type: String, trim: true, uppercase: true },
+      number: { type: String, trim: true },
+      documentDate: Date,
+      accountingDate: Date,
+      fiscalPeriod: { type: String, match: /^\d{4}-\d{2}$/ },
+      accountNumber: { type: String, trim: true },
+      subaccountNumber: { type: String, trim: true },
+      processedAt: Date,
+      processedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" }
+    },
     bankFile: {
+      bank: String,
       fileName: String,
       url: String,
       generatedAt: Date,
       generatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" }
+    },
+    payment: {
+      operationNumber: String,
+      paidAt: Date,
+      confirmedAt: Date,
+      confirmedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+      reconciliationComments: String
     },
     rendition: {
       submittedAt: Date,
@@ -107,7 +150,7 @@ const financialRequestSchema = new mongoose.Schema(
 
 financialRequestSchema.pre("validate", function beforeValidate(next) {
   if (!this.requestNumber) {
-    this.requestNumber = `REQ-${new Date().getFullYear()}-${Date.now().toString().slice(-7)}`;
+    this.requestNumber = `SOL-${new Date().getFullYear()}-${Date.now().toString().slice(-7)}`;
   }
 
   const totals = (this.lines || []).reduce(
@@ -130,6 +173,17 @@ financialRequestSchema.pre("validate", function beforeValidate(next) {
 
 financialRequestSchema.index({ status: 1, accountingPeriod: 1 });
 financialRequestSchema.index({ solicitor: 1, createdAt: -1 });
+financialRequestSchema.index(
+  { supplier: 1, "fiscalData.documentType": 1, "fiscalData.series": 1, "fiscalData.number": 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      "fiscalData.documentType": { $type: "string" },
+      "fiscalData.series": { $type: "string" },
+      "fiscalData.number": { $type: "string" }
+    }
+  }
+);
 
 const FinancialRequest = mongoose.model("FinancialRequest", financialRequestSchema);
 export default FinancialRequest;

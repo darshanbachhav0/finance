@@ -24,13 +24,29 @@ import { useAuth } from "../context/AuthContext.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import { useToast } from "../context/ToastContext.jsx";
 
-const standardFlow = ["BORRADOR", "PENDIENTE_APROBACION", "APROBADO_POR_PAGAR", "PROCESADO_BANCO", "LIQUIDADO_CERRADO"];
-const renditionFlow = ["BORRADOR", "PENDIENTE_APROBACION", "APROBADO_POR_PAGAR", "RENDICION_PENDIENTE", "LIQUIDADO_CERRADO"];
+const standardFlow = ["BORRADOR", "PENDIENTE_APROBACION", "APROBADO_DIRECTOR", "COMPROMISO_PRESUPUESTAL", "APROBADO_POR_PAGAR", "PROCESADO_BANCO", "PAGADO", "LIQUIDADO_CERRADO"];
+const renditionFlow = ["BORRADOR", "PENDIENTE_APROBACION", "APROBADO_DIRECTOR", "COMPROMISO_PRESUPUESTAL", "APROBADO_POR_PAGAR", "RENDICION_PENDIENTE", "LIQUIDADO_CERRADO"];
+
+function missingRequiredDocuments(request) {
+  const rules = [];
+  if (["Pago con Cotización", "Reembolso con Sustento"].includes(request.requestType)) rules.push(["XML", 1], ["PDF", 1]);
+  const byNature = {
+    "Compra de Bienes": [["QUOTATION", 3], ["PDF", 1]],
+    "Contratación de Servicios": [["PDF", 1], ["CONTRACT", 1], ["CONFORMITY", 1]],
+    "Honorarios Profesionales": [["PDF", 1], ["CONTRACT", 1], ["ACTIVITY_REPORT", 1]],
+    "Caja Chica": [["SUPPORTING", 1]],
+    "Reembolso / Liquidación": [["SUPPORTING", 1]]
+  };
+  (byNature[request.expenseNature] || []).forEach((rule) => {
+    if (!rules.some(([kind]) => kind === rule[0])) rules.push(rule);
+  });
+  return rules.filter(([kind, count]) => request.attachments?.filter((item) => item.kind === kind).length < count).map(([kind, count]) => count > 1 ? `${kind} × ${count}` : kind);
+}
 
 function RequestStatusFlow({ request }) {
   const { t } = useLanguage();
   const flow = request.requestType === "Entrega a Rendir" ? renditionFlow : standardFlow;
-  const effectiveStatus = request.status === "RECHAZADO" ? "PENDIENTE_APROBACION" : request.status;
+  const effectiveStatus = request.status === "RECHAZADO" ? "PENDIENTE_APROBACION" : request.status === "APROBADO_VICERRECTOR" ? "COMPROMISO_PRESUPUESTAL" : request.status === "TXT_GENERADO" ? "PROCESADO_BANCO" : request.status === "CONCILIADO" ? "PAGADO" : request.status;
   const currentIndex = flow.indexOf(effectiveStatus);
   return (
     <ol className="status-flow" aria-label={t("Request workflow status")}>
@@ -85,15 +101,14 @@ export default function RequestDetail() {
     return {
       owner,
       modifiable,
-      canApprove: request.status === "PENDIENTE_APROBACION" && ["Admin", "Approver"].includes(user.role),
-      canClose: ["APROBADO_POR_PAGAR", "PROCESADO_BANCO"].includes(request.status) && ["Admin", "Accounting"].includes(user.role),
+      canApprove: ["PENDIENTE_APROBACION", "APROBADO_DIRECTOR"].includes(request.status) && ["Admin", "Approver"].includes(user.role) && (user.role === "Admin" || user.approvalLevel === request.approvalStage),
+      canClose: ["APROBADO_POR_PAGAR", "PROCESADO_BANCO", "PAGADO", "CONCILIADO"].includes(request.status) && ["Admin", "Accounting"].includes(user.role),
+      canVoid: !["BORRADOR", "LIQUIDADO_CERRADO", "ANULADO"].includes(request.status) && ["Admin", "Accounting"].includes(user.role),
       canRendition: request.status === "RENDICION_PENDIENTE" && (owner || ["Admin", "Accounting"].includes(user.role))
     };
   }, [request, user]);
 
-  const missingSubmitDocs = request && ["Pago con Cotización", "Reembolso con Sustento"].includes(request.requestType)
-    ? ["XML", "PDF"].filter((kind) => !request.attachments?.some((item) => item.kind === kind))
-    : [];
+  const missingSubmitDocs = request ? missingRequiredDocuments(request) : [];
 
   async function runAction(type, comments = "") {
     setProcessing(true);
@@ -102,6 +117,7 @@ export default function RequestDetail() {
       if (type === "approve") await api.post(`/approvals/${id}/approve`, { comments });
       if (type === "reject") await api.post(`/approvals/${id}/reject`, { comments });
       if (type === "close") await api.post(`/requests/${id}/close`, { comments });
+      if (type === "void") await api.post(`/requests/${id}/void`, { comments });
       if (type === "delete") {
         await api.delete(`/requests/${id}`);
         notify("Draft request permanently deleted.");
@@ -109,9 +125,10 @@ export default function RequestDetail() {
         return;
       }
       const messages = {
-        approve: "Request approved and provision entries generated.",
+        approve: request.approvalStage === "AREA_DIRECTOR" ? "Director approval recorded and sent to Vice Rector." : "Vice Rector approval recorded and budget commitment created.",
         reject: "Request rejected and returned to the solicitor.",
-        close: "Request closed. Its status is now LIQUIDADO_CERRADO."
+        close: "Request closed. Its status is now LIQUIDADO_CERRADO.",
+        void: "Request voided and any reserved budget was released."
       };
       notify(messages[type]);
       setConfirm(null);
@@ -200,6 +217,11 @@ export default function RequestDetail() {
                 <div className="section-heading"><div><h3>{t("Request summary")}</h3><p>{request.description}</p></div></div>
                 <dl className="detail-grid">
                   <div><dt>{t("Request type")}</dt><dd>{t(request.requestType)}</dd></div>
+                  <div><dt>{t("Expense nature")}</dt><dd>{t(request.expenseNature || "-")}</dd></div>
+                  <div><dt>{t("Priority")}</dt><dd><span className={`priority priority-${String(request.priority || "MEDIA").toLowerCase()}`}>{t(request.priority || "MEDIA")}</span></dd></div>
+                  <div><dt>{t("Requesting area")}</dt><dd>{request.requestingArea || request.solicitor?.area || "-"}</dd></div>
+                  <div><dt>{t("School / department")}</dt><dd>{request.schoolOrDepartment || "-"}</dd></div>
+                  <div><dt>{t("Project")}</dt><dd>{request.project || "-"}</dd></div>
                   <div><dt>{t("Issue date")}</dt><dd>{request.issueDate?.slice(0, 10)}</dd></div>
                   <div><dt>{t("Accounting period")}</dt><dd>{request.accountingPeriod}</dd></div>
                   <div><dt>{t("Currency")}</dt><dd>{request.currency}</dd></div>
@@ -235,11 +257,14 @@ export default function RequestDetail() {
                 </div>
               </div>
 
-              {(request.bankFile?.fileName || request.rendition?.submittedAt) && (
+              {(request.bankFile?.fileName || request.rendition?.submittedAt || request.budgetCommitment || request.fiscalData?.processedAt || request.payment?.confirmedAt) && (
                 <div className="workspace-panel detail-section">
                   <div className="section-heading"><h3>{t("Payment and rendition information")}</h3></div>
                   <dl className="detail-grid">
-                    {request.bankFile?.fileName && <><div><dt>{t("Bank file")}</dt><dd><a href={apiAssetUrl(request.bankFile.url)} target="_blank" rel="noreferrer">{request.bankFile.fileName}</a></dd></div><div><dt>{t("Generated")}</dt><dd>{new Date(request.bankFile.generatedAt).toLocaleString()}</dd></div><div><dt>{t("Generated by")}</dt><dd>{request.bankFile.generatedBy?.name || "-"}</dd></div></>}
+                    {request.budgetCommitment && <><div><dt>{t("Budget status")}</dt><dd>{request.budgetCommitment.status}</dd></div><div><dt>{t("Committed amount")}</dt><dd>PEN {Number(request.budgetCommitment.totalAmount || 0).toFixed(2)}</dd></div></>}
+                    {request.fiscalData?.processedAt && <><div><dt>{t("Fiscal document")}</dt><dd>{request.fiscalData.documentType} {request.fiscalData.series}-{request.fiscalData.number}</dd></div><div><dt>{t("Fiscal period")}</dt><dd>{request.fiscalData.fiscalPeriod}</dd></div><div><dt>{t("Processed by")}</dt><dd>{request.fiscalData.processedBy?.name || "-"}</dd></div></>}
+                    {request.bankFile?.fileName && <><div><dt>{t("Bank file")}</dt><dd><a href={apiAssetUrl(request.bankFile.url)} target="_blank" rel="noreferrer">{request.bankFile.fileName}</a></dd></div><div><dt>{t("Bank")}</dt><dd>{request.bankFile.bank || "-"}</dd></div><div><dt>{t("Generated")}</dt><dd>{new Date(request.bankFile.generatedAt).toLocaleString()}</dd></div><div><dt>{t("Generated by")}</dt><dd>{request.bankFile.generatedBy?.name || "-"}</dd></div></>}
+                    {request.payment?.confirmedAt && <><div><dt>{t("Operation number")}</dt><dd>{request.payment.operationNumber}</dd></div><div><dt>{t("Actual payment date")}</dt><dd>{request.payment.paidAt?.slice(0, 10)}</dd></div><div><dt>{t("Confirmed by")}</dt><dd>{request.payment.confirmedBy?.name || "-"}</dd></div></>}
                     {request.rendition?.submittedAt && <><div><dt>{t("Rendition submitted")}</dt><dd>{new Date(request.rendition.submittedAt).toLocaleString()}</dd></div><div><dt>{t("Submitted by")}</dt><dd>{request.rendition.submittedBy?.name || "-"}</dd></div><div className="wide"><dt>{t("Comments")}</dt><dd>{request.rendition.comments || "-"}</dd></div></>}
                   </dl>
                 </div>
@@ -247,22 +272,23 @@ export default function RequestDetail() {
             </div>
 
             <aside className="request-detail-side">
-              {(permissions.modifiable || permissions.canApprove || permissions.canClose || permissions.canRendition) && (
+              {(permissions.modifiable || permissions.canApprove || permissions.canClose || permissions.canRendition || permissions.canVoid) && (
                 <div className="workspace-panel action-panel">
                   <div className="section-heading"><div><h3>{t("Available actions")}</h3><p>{t("Actions allowed for your role and this status.")}</p></div></div>
                   {permissions.modifiable && (
                     <div className="action-item">
                       <div><strong>{t("Submit for approval")}</strong><span>{missingSubmitDocs.length ? t("Required documents are missing: {documents}.").replace("{documents}", missingSubmitDocs.join(", ")) : t("Moves this request to the approval inbox.")}</span></div>
-                      <button type="button" className="primary-button" disabled={processing || missingSubmitDocs.length > 0} title={missingSubmitDocs.length ? t("Upload the required XML and PDF before submission.") : undefined} onClick={submitRequest}><Send size={16} /><span>{t("Submit")}</span></button>
+                      <button type="button" className="primary-button" disabled={processing || missingSubmitDocs.length > 0} title={missingSubmitDocs.length ? t("Upload all required documents before submission.") : undefined} onClick={submitRequest}><Send size={16} /><span>{t("Submit")}</span></button>
                     </div>
                   )}
                   {permissions.canApprove && (
                     <div className="action-buttons">
-                      <button type="button" className="primary-button" onClick={() => setConfirm({ type: "approve", title: "Approve this request?", description: "Approval will move the request to the Treasury payable queue and create provision accounting entries.", confirmLabel: "Approve request", details: [{ label: "Request", value: request.requestNumber }, { label: "Amount", value: `${request.currency} ${Number(request.totalAmount).toFixed(2)}` }, { label: "Result", value: "Status changes to APROBADO_POR_PAGAR and provision entries are created." }] })}><CheckCircle2 size={16} /><span>{t("Approve")}</span></button>
+                      <button type="button" className="primary-button" onClick={() => setConfirm({ type: "approve", title: "Approve this request?", description: request.approvalStage === "AREA_DIRECTOR" ? "Record the Area Director electronic approval and start the Vice Rector SLA." : "Record the Vice Rector electronic approval and reserve the available budget.", confirmLabel: "Approve request", details: [{ label: "Request", value: request.requestNumber }, { label: "Approval level", value: request.approvalStage }, { label: "Amount", value: `${request.currency} ${Number(request.totalAmount).toFixed(2)}` }, { label: "Result", value: request.approvalStage === "AREA_DIRECTOR" ? "Status changes to APROBADO_DIRECTOR." : "Budget is reserved and the request moves to Accounting." }] })}><CheckCircle2 size={16} /><span>{t("Approve")}</span></button>
                       <button type="button" className="danger-button subtle" onClick={() => setConfirm({ type: "reject", title: "Reject this request?", description: "The request will return to the solicitor for correction. A rejection comment is required.", confirmLabel: "Reject request", tone: "danger", inputLabel: "Rejection comments", inputRequired: true, details: [{ label: "Request", value: request.requestNumber }, { label: "Result", value: "Status changes to RECHAZADO and the solicitor can edit it." }] })}><XCircle size={16} /><span>{t("Reject")}</span></button>
                     </div>
                   )}
                   {permissions.canClose && <button type="button" className="primary-button" onClick={() => setConfirm({ type: "close", title: "Close this request?", description: "Closing completes the request workflow. The accounting period must still be open.", confirmLabel: "Close request", inputLabel: "Closing comments", details: [{ label: "Request", value: request.requestNumber }, { label: "Result", value: "Status changes to LIQUIDADO_CERRADO." }] })}><CheckCircle2 size={16} /><span>{t("Close request")}</span></button>}
+                  {permissions.canVoid && <button type="button" className="danger-button subtle" onClick={() => setConfirm({ type: "void", title: "Void this request?", description: "The request will be annulled and any reserved budget will be released automatically.", confirmLabel: "Void request", tone: "danger", inputLabel: "Void reason", inputRequired: true, details: [{ label: "Request", value: request.requestNumber }, { label: "Result", value: "Status changes to ANULADO and reserved budget is released." }] })}><Trash2 size={16} /><span>{t("Void request")}</span></button>}
                   {permissions.canRendition && (
                     <div className="rendition-form">
                       <label className="field"><span>{t("Rendition documents")} *</span><input type="file" multiple onChange={(event) => setRenditionFiles(Array.from(event.target.files || []))} /><small className="field-hint">{renditionFiles.length ? t("{count} files selected").replace("{count}", renditionFiles.length) : t("Receipts and supporting documents are required.")}</small></label>

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertMandatoryDocuments, assertRequestLines } from "../src/services/requestRules.js";
+import { assertMandatoryDocuments, assertRequestLines, requiredDocumentsFor } from "../src/services/requestRules.js";
 import { MANDATORY_XML_TYPES } from "../src/utils/constants.js";
 
 test("mandatory invoice request types require both XML and PDF", () => {
@@ -28,4 +28,17 @@ test("every request needs at least one fully dimensioned accounting line", () =>
     (error) => error.statusCode === 422 && /Expense Type/.test(error.message)
   );
   assert.doesNotThrow(() => assertRequestLines([{ costCenter: "cost-1", expenseType: "expense-1" }]));
+});
+
+test("goods purchases require three quotations and an invoice document", () => {
+  const request = { requestType: "CAPEX", expenseNature: "Compra de Bienes", attachments: [{ kind: "PDF" }, { kind: "QUOTATION" }, { kind: "QUOTATION" }] };
+  assert.deepEqual(requiredDocumentsFor(request).map((rule) => [rule.kind, rule.min]), [["QUOTATION", 3], ["PDF", 1]]);
+  assert.throws(() => assertMandatoryDocuments(request), (error) => error.statusCode === 422 && /three quotations/.test(error.message));
+  request.attachments.push({ kind: "QUOTATION" });
+  assert.doesNotThrow(() => assertMandatoryDocuments(request));
+});
+
+test("service requests require invoice, signed contract, and conformity report", () => {
+  const request = { requestType: "OPEX", expenseNature: "Contratación de Servicios", attachments: [{ kind: "PDF" }, { kind: "CONTRACT" }, { kind: "CONFORMITY" }] };
+  assert.doesNotThrow(() => assertMandatoryDocuments(request));
 });

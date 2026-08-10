@@ -1,6 +1,6 @@
 import bcrypt from "bcrypt";
 import mongoose from "mongoose";
-import { ROLES } from "../utils/constants.js";
+import { APPROVAL_STAGES, ROLES } from "../utils/constants.js";
 
 const userSchema = new mongoose.Schema(
   {
@@ -13,6 +13,12 @@ const userSchema = new mongoose.Schema(
       default: ROLES.SOLICITOR,
       required: true
     },
+    approvalLevel: {
+      type: String,
+      enum: [APPROVAL_STAGES.AREA_DIRECTOR, APPROVAL_STAGES.VICE_RECTOR],
+      default: APPROVAL_STAGES.AREA_DIRECTOR
+    },
+    costCenter: { type: mongoose.Schema.Types.ObjectId, ref: "CostCenter" },
     area: { type: String, trim: true, default: "General" },
     active: { type: Boolean, default: true }
   },

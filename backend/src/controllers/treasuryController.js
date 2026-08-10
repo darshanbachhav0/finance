@@ -8,6 +8,8 @@ import { REQUEST_STATUS } from "../utils/constants.js";
 import { ensurePeriodOpen } from "../services/periodService.js";
 import { generatePaymentEntries } from "../services/accountingService.js";
 import GeneratedFile from "../models/GeneratedFile.js";
+import { recordAudit, workflowEvent } from "../services/auditService.js";
+import { executeBudget } from "../services/budgetService.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -35,8 +37,15 @@ export const listBankFiles = asyncHandler(async (_req, res) => {
   res.json({ data });
 });
 
+export const paymentConfirmationQueue = asyncHandler(async (_req, res) => {
+  const data = await FinancialRequest.find({ status: { $in: [REQUEST_STATUS.BANK_PROCESSED, REQUEST_STATUS.RENDITION_PENDING] }, "payment.confirmedAt": { $exists: false } })
+    .populate(populateRequest)
+    .sort({ "bankFile.generatedAt": 1 });
+  res.json({ data });
+});
+
 export const generateBankFile = asyncHandler(async (req, res) => {
-  const { requestIds } = req.body;
+  const { requestIds, bank = "AUTO", paymentDate } = req.body;
   if (!Array.isArray(requestIds) || requestIds.length === 0) {
     throw new AppError(400, "Select at least one payable request.");
   }
@@ -55,9 +64,11 @@ export const generateBankFile = asyncHandler(async (req, res) => {
   }
 
   await fs.mkdir(bankFilesDir, { recursive: true });
-  const fileName = `bank-payments-${Date.now()}.txt`;
+  const normalizedBank = String(bank || "AUTO").toUpperCase();
+  const fileName = `${normalizedBank.toLowerCase()}-payments-${Date.now()}.txt`;
   const filePath = path.join(bankFilesDir, fileName);
-  const header = "RUC_DNI|SUPPLIER_NAME|BANK_ACCOUNT_OR_CCI|AMOUNT|CURRENCY|REQUEST_ID";
+  const separator = normalizedBank === "BCP" ? "|" : normalizedBank === "BBVA" ? ";" : ",";
+  const header = ["RUC_DNI", "SUPPLIER_NAME", "BANK_ACCOUNT_OR_CCI", "AMOUNT", "CURRENCY", "PAYMENT_DATE", "REQUEST_ID"].join(separator);
   const rows = requests.map((request) =>
     [
       request.supplier.rucDni,
@@ -65,8 +76,9 @@ export const generateBankFile = asyncHandler(async (req, res) => {
       request.supplier.cci || request.supplier.bankAccount || "",
       request.totalAmount.toFixed(2),
       request.currency,
+      paymentDate || new Date().toISOString().slice(0, 10),
       request.requestNumber
-    ].join("|")
+    ].join(separator)
   );
   const content = [header, ...rows].join("\n");
   await fs.writeFile(filePath, content, "utf8");
@@ -75,21 +87,32 @@ export const generateBankFile = asyncHandler(async (req, res) => {
     const from = request.status;
     request.status = request.requestType === "Entrega a Rendir" ? REQUEST_STATUS.RENDITION_PENDING : REQUEST_STATUS.BANK_PROCESSED;
     request.bankFile = {
+      bank: normalizedBank,
       fileName,
       url: `/uploads/bank-files/${fileName}`,
       generatedAt: new Date(),
       generatedBy: req.user._id
     };
-    request.approvalHistory.push({
+    request.approvalHistory.push(workflowEvent({
       action: "BANK_FILE_GENERATED",
-      statusFrom: from,
-      statusTo: request.status,
-      actor: req.user._id,
-      role: req.user.role,
-      comments: `Included in ${fileName}.`
-    });
+      from,
+      to: request.status,
+      user: req.user,
+      req,
+      comments: `Included in ${fileName} for ${normalizedBank}.`
+    }));
     await request.save();
     await generatePaymentEntries(request, req.user._id);
+    await executeBudget(request, req.user._id);
+    await recordAudit({
+      entityType: "FinancialRequest",
+      entity: request,
+      action: "BANK_FILE_GENERATED",
+      user: req.user,
+      req,
+      comments: `Included in ${fileName}.`,
+      changes: { bank: normalizedBank, paymentDate, status: request.status }
+    });
   }
 
   const totalsMap = requests.reduce((result, request) => {
@@ -110,7 +133,7 @@ export const generateBankFile = asyncHandler(async (req, res) => {
     totals,
     rowCount: requests.length,
     generatedBy: req.user._id,
-    metadata: { statusChangesApplied: true, paymentEntriesCreated: true }
+    metadata: { bank: normalizedBank, paymentDate, statusChangesApplied: true, paymentEntriesCreated: true }
   });
 
   res.status(201).json({
@@ -122,4 +145,45 @@ export const generateBankFile = asyncHandler(async (req, res) => {
     statusChangesApplied: true,
     paymentEntriesCreated: true
   });
+});
+
+export const confirmPayment = asyncHandler(async (req, res) => {
+  const { operationNumber, paidAt, comments } = req.body;
+  if (!operationNumber || !paidAt) throw new AppError(422, "Operation number and actual payment date are required.");
+
+  const request = await FinancialRequest.findById(req.params.id).populate(populateRequest);
+  if (!request) throw new AppError(404, "Financial request not found.");
+  if (![REQUEST_STATUS.BANK_PROCESSED, REQUEST_STATUS.RENDITION_PENDING].includes(request.status)) {
+    throw new AppError(422, "Payment can only be confirmed after bank-file generation.");
+  }
+  await ensurePeriodOpen(request.accountingPeriod);
+
+  const from = request.status;
+  request.payment = {
+    operationNumber: String(operationNumber).trim(),
+    paidAt,
+    confirmedAt: new Date(),
+    confirmedBy: req.user._id,
+    reconciliationComments: comments
+  };
+  if (request.requestType !== "Entrega a Rendir") request.status = REQUEST_STATUS.PAID;
+  request.approvalHistory.push(workflowEvent({
+    action: "PAYMENT_CONFIRMED",
+    from,
+    to: request.status,
+    user: req.user,
+    req,
+    comments: comments || `Payment confirmed with operation ${operationNumber}.`
+  }));
+  await request.save();
+  await recordAudit({
+    entityType: "FinancialRequest",
+    entity: request,
+    action: "PAYMENT_CONFIRMED",
+    user: req.user,
+    req,
+    comments,
+    changes: { operationNumber, paidAt, status: request.status }
+  });
+  res.json({ data: request });
 });
