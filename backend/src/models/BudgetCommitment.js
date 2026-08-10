@@ -1,12 +1,28 @@
 import mongoose from "mongoose";
+import { BUDGET_STATUS } from "../utils/constants.js";
+
+const commitmentHistorySchema = new mongoose.Schema(
+  {
+    status: { type: String, enum: Object.values(BUDGET_STATUS), required: true },
+    amount: { type: Number, min: 0 },
+    at: { type: Date, default: Date.now },
+    by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    comments: String
+  },
+  { _id: true }
+);
 
 const commitmentLineSchema = new mongoose.Schema(
   {
+    allocation: { type: mongoose.Schema.Types.ObjectId, ref: "BudgetAllocation" },
     costCenter: { type: mongoose.Schema.Types.ObjectId, ref: "CostCenter", required: true },
     expenseType: { type: mongoose.Schema.Types.ObjectId, ref: "ExpenseType", required: true },
+    budgetItem: String,
     project: String,
     amount: { type: Number, required: true, min: 0 },
-    mode: { type: String, enum: ["TRANSITIONAL", "ACTIVE"], required: true }
+    mode: { type: String, enum: ["TRANSITIONAL", "ACTIVE"], required: true },
+    exceptionStrategy: String,
+    budgetException: { type: mongoose.Schema.Types.ObjectId, ref: "BudgetException" }
   },
   { _id: false }
 );
@@ -16,17 +32,21 @@ const budgetCommitmentSchema = new mongoose.Schema(
     request: { type: mongoose.Schema.Types.ObjectId, ref: "FinancialRequest", required: true, unique: true },
     requestNumber: { type: String, required: true },
     period: { type: String, required: true },
-    lines: [commitmentLineSchema],
+    lines: { type: [commitmentLineSchema], required: true },
     totalAmount: { type: Number, required: true, min: 0 },
-    status: { type: String, enum: ["RESERVED", "WITHOUT_BUDGET", "EXECUTED", "RELEASED"], required: true },
+    status: { type: String, enum: Object.values(BUDGET_STATUS), required: true, default: BUDGET_STATUS.AVAILABLE },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    reservedAt: Date,
     executedAt: Date,
     executedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    paidAt: Date,
+    paidBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     releasedAt: Date,
     releasedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-    releaseReason: String
+    releaseReason: String,
+    history: { type: [commitmentHistorySchema], default: [] }
   },
-  { timestamps: true }
+  { timestamps: true, optimisticConcurrency: true }
 );
 
 budgetCommitmentSchema.index({ status: 1, period: 1 });

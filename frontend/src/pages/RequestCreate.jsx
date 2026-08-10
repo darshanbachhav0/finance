@@ -9,7 +9,15 @@ import WorkflowStepper from "../components/WorkflowStepper.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import { useToast } from "../context/ToastContext.jsx";
-import { currencies, expenseNatures, requestPriorities, requestTypes } from "../utils/options.js";
+import {
+  currencies,
+  expenseNatureLabels,
+  expenseNatures,
+  optionLabel,
+  requestPriorities,
+  requestTypeLabels,
+  requestTypes
+} from "../utils/options.js";
 
 const steps = ["Basic information", "Accounting lines", "Documents", "Review and submit"];
 const emptyLine = () => ({ clientId: `${Date.now()}-${Math.random()}`, costCenter: "", expenseType: "", netAmount: "", igvAmount: "", totalAmount: "" });
@@ -18,7 +26,7 @@ function initialForm() {
   const today = new Date().toISOString().slice(0, 10);
   return {
     requestType: "OPEX",
-    expenseNature: "Contratación de Servicios",
+    expenseNature: "SERVICES",
     priority: "MEDIA",
     schoolOrDepartment: "",
     project: "",
@@ -41,24 +49,6 @@ const documentDefinitions = [
   { key: "supporting", kind: "SUPPORTING", label: "Supporting documents", accept: ".pdf,.doc,.docx,.xlsx,.jpg,.jpeg,.png,.csv,.txt", multiple: true }
 ];
 
-function requiredDocumentRules(form) {
-  const rules = [];
-  if ([requestTypes[3], requestTypes[5]].includes(form.requestType)) rules.push({ key: "xml", min: 1 }, { key: "pdf", min: 1 });
-  const byNature = {
-    "Compra de Bienes": [{ key: "quotation", min: 3 }, { key: "pdf", min: 1 }],
-    "Contratación de Servicios": [{ key: "pdf", min: 1 }, { key: "contract", min: 1 }, { key: "conformity", min: 1 }],
-    "Honorarios Profesionales": [{ key: "pdf", min: 1 }, { key: "contract", min: 1 }, { key: "activityReport", min: 1 }],
-    "Caja Chica": [{ key: "supporting", min: 1 }],
-    "Reembolso / Liquidación": [{ key: "supporting", min: 1 }]
-  };
-  for (const rule of byNature[form.expenseNature] || []) {
-    const current = rules.find((item) => item.key === rule.key);
-    if (current) current.min = Math.max(current.min, rule.min);
-    else rules.push(rule);
-  }
-  return rules;
-}
-
 export default function RequestCreate() {
   const { id } = useParams();
   const { user } = useAuth();
@@ -67,7 +57,7 @@ export default function RequestCreate() {
   const navigate = useNavigate();
   const isEditing = Boolean(id);
   const draftKey = `erp_request_autosave_${user._id}_${id || "new"}`;
-  const [masters, setMasters] = useState({ suppliers: [], costCenters: [], expenseTypes: [] });
+  const [masters, setMasters] = useState({ suppliers: [], costCenters: [], expenseTypes: [], projects: [], periods: [] });
   const [form, setForm] = useState(initialForm);
   const [lines, setLines] = useState([emptyLine()]);
   const [files, setFiles] = useState(Object.fromEntries(documentDefinitions.map((item) => [item.key, []])));
@@ -81,29 +71,38 @@ export default function RequestCreate() {
   const [saving, setSaving] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [savedStatus, setSavedStatus] = useState("");
+  const [documentRules, setDocumentRules] = useState([]);
 
   useEffect(() => {
     async function load() {
       setLoading(true);
       try {
-        const calls = [api.get("/suppliers"), api.get("/cost-centers"), api.get("/expense-types")];
+        const calls = [
+          api.get("/suppliers", { params: { pageSize: 100 } }),
+          api.get("/cost-centers", { params: { pageSize: 100, active: true } }),
+          api.get("/expense-types", { params: { pageSize: 100, active: true } }),
+          api.get("/projects", { params: { pageSize: 100, active: true } }),
+          api.get("/accounting-periods", { params: { pageSize: 100 } })
+        ];
         if (isEditing) calls.push(api.get(`/requests/${id}`));
-        const [suppliers, costCenters, expenseTypes, requestResponse] = await Promise.all(calls);
+        const [suppliers, costCenters, expenseTypes, projects, periods, requestResponse] = await Promise.all(calls);
         setMasters({
-          suppliers: suppliers.data.data.filter((item) => item.status === "ACTIVE"),
+          suppliers: suppliers.data.data.filter((item) => item.active && item.homologationStatus === "HOMOLOGATED"),
           costCenters: costCenters.data.data.filter((item) => item.active),
-          expenseTypes: expenseTypes.data.data.filter((item) => item.active)
+          expenseTypes: expenseTypes.data.data.filter((item) => item.active),
+          projects: projects.data.data.filter((item) => item.active),
+          periods: periods.data.data
         });
 
         if (requestResponse) {
           const request = requestResponse.data.data;
-          if (!["BORRADOR", "RECHAZADO"].includes(request.status) || (user.role !== "Admin" && request.solicitor?._id !== user._id)) {
+          if (!["BORRADOR", "RECHAZADO", "OBSERVADO", "DEVUELTO"].includes(request.status) || (user.role !== "Admin" && (request.requester?._id || request.solicitor?._id) !== user._id)) {
             navigate(`/requests/${id}`, { replace: true });
             return;
           }
           const serverForm = {
             requestType: request.requestType,
-            expenseNature: request.expenseNature || "Contratación de Servicios",
+            expenseNature: request.expenseNature || "SERVICES",
             priority: request.priority || "MEDIA",
             schoolOrDepartment: request.schoolOrDepartment || "",
             project: request.project || "",
@@ -135,6 +134,9 @@ export default function RequestCreate() {
             setForm(parsed.form || initialForm());
             setLines(parsed.lines?.length ? parsed.lines : [emptyLine()]);
             setSavedStatus(t("Recovered local draft"));
+          } else {
+            const defaultCostCenter = user.costCenter?._id || user.costCenter || "";
+            if (defaultCostCenter) setLines([{ ...emptyLine(), costCenter: String(defaultCostCenter) }]);
           }
         }
         setHydrated(true);
@@ -148,6 +150,21 @@ export default function RequestCreate() {
   }, [id]);
 
   useEffect(() => {
+    if (!form.requestType || !form.expenseNature) return undefined;
+    let active = true;
+    api.get("/requests/document-requirements", { params: { requestType: form.requestType, expenseNature: form.expenseNature } })
+      .then((response) => {
+        if (!active) return;
+        setDocumentRules((response.data.data || []).map((rule) => {
+          const definition = documentDefinitions.find((item) => item.kind === rule.kind);
+          return { ...rule, key: definition?.key, min: rule.minCount, label: rule.labelKey };
+        }).filter((rule) => rule.key));
+      })
+      .catch((err) => active && setError(err.message));
+    return () => { active = false; };
+  }, [form.requestType, form.expenseNature]);
+
+  useEffect(() => {
     if (!hydrated) return undefined;
     setSavedStatus(t("Saving locally..."));
     const timer = window.setTimeout(() => {
@@ -158,8 +175,12 @@ export default function RequestCreate() {
   }, [form, lines, hydrated, draftKey, language]);
 
   const selectedSupplier = masters.suppliers.find((supplier) => supplier._id === form.supplier);
-  const documentRules = useMemo(() => requiredDocumentRules(form), [form.requestType, form.expenseNature]);
   const mandatoryDocuments = documentRules.length > 0;
+  const allowedExpenseTypes = useMemo(() => masters.expenseTypes.filter((item) => {
+    const typeAllowed = !item.permittedRequestTypes?.length || item.permittedRequestTypes.includes(form.requestType);
+    const natureAllowed = !item.permittedExpenseNatures?.length || item.permittedExpenseNatures.includes(form.expenseNature);
+    return typeAllowed && natureAllowed;
+  }), [masters.expenseTypes, form.requestType, form.expenseNature]);
   const totals = useMemo(() => lines.reduce((result, line) => ({
     net: result.net + Number(line.netAmount || 0),
     igv: result.igv + Number(line.igvAmount || 0),
@@ -182,6 +203,8 @@ export default function RequestCreate() {
         if (!String(form[field] || "").trim()) next[field] = "This field is required.";
       });
       if (form.accountingPeriod && !/^\d{4}-\d{2}$/.test(form.accountingPeriod)) next.accountingPeriod = "Use YYYY-MM format.";
+      const selectedPeriod = masters.periods.find((item) => item.period === form.accountingPeriod);
+      if (form.accountingPeriod && (!selectedPeriod || selectedPeriod.status !== "OPEN")) next.accountingPeriod = "Accounting period must be open.";
     }
     if (index === 1) {
       if (!lines.length) next.lines = "At least one request line is required.";
@@ -196,8 +219,12 @@ export default function RequestCreate() {
     if (index === 2 && submitting) {
       documentRules.forEach((rule) => {
         const definition = documentDefinitions.find((item) => item.key === rule.key);
-        const count = existingAttachments.filter((item) => item.kind === definition.kind).length + files[rule.key].length;
-        if (count < rule.min) next[rule.key] = `${definition.label}: ${rule.min} required.`;
+        const count = existingAttachments.filter((item) => item.kind === definition.kind).length + (files[rule.key]?.length || 0);
+        if (count < rule.min) {
+          next[rule.key] = t("A minimum of {count} {document} file(s) is required.")
+            .replace("{document}", t(definition.label))
+            .replace("{count}", String(rule.min));
+        }
       });
     }
     setErrors((current) => ({ ...current, ...next }));
@@ -254,7 +281,8 @@ export default function RequestCreate() {
       notify(sendForApproval ? "Request submitted for approval." : isEditing ? "Draft request updated." : "Draft request created.");
       navigate(`/requests/${response.data.data._id}`);
     } catch (err) {
-      const details = err.details?.errors ? err.details.errors.join(" ") : "";
+      const detailErrors = err.details?.errors || err.details?.missing?.map((item) => `${item.label}: ${item.present}/${item.required}`) || [];
+      const details = Array.isArray(detailErrors) ? detailErrors.join(" ") : "";
       setError(`${err.message}${details ? ` ${details}` : ""}`);
       notify(err.message, "error");
     } finally {
@@ -276,14 +304,14 @@ export default function RequestCreate() {
             <div className="wizard-step" aria-labelledby="basic-heading">
               <div className="section-heading"><div><h3 id="basic-heading">{t("Basic information")}</h3><p>{t("Identify the supplier, request type, period, and purpose.")}</p></div></div>
               <div className="form-grid two-column-form">
-                <label className={`field${fieldError("requestType") ? " field-error" : ""}`}><span>{t("Request type")} *</span><select value={form.requestType} onChange={(event) => setForm({ ...form, requestType: event.target.value })}>{requestTypes.map((type) => <option key={type} value={type}>{t(type)}</option>)}</select>{fieldError("requestType") && <small className="field-error-text">{t(fieldError("requestType"))}</small>}</label>
-                <label className="field"><span>{t("Expense nature")} *</span><select value={form.expenseNature} onChange={(event) => setForm({ ...form, expenseNature: event.target.value })}>{expenseNatures.map((item) => <option key={item} value={item}>{t(item)}</option>)}</select></label>
+                <label className={`field${fieldError("requestType") ? " field-error" : ""}`}><span>{t("Request type")} *</span><select value={form.requestType} onChange={(event) => setForm({ ...form, requestType: event.target.value })}>{requestTypes.map((type) => <option key={type} value={type}>{t(optionLabel(type, requestTypeLabels))}</option>)}</select>{fieldError("requestType") && <small className="field-error-text">{t(fieldError("requestType"))}</small>}</label>
+                <label className="field"><span>{t("Expense nature")} *</span><select value={form.expenseNature} onChange={(event) => setForm({ ...form, expenseNature: event.target.value })}>{expenseNatures.map((item) => <option key={item} value={item}>{t(optionLabel(item, expenseNatureLabels))}</option>)}</select></label>
                 <label className="field"><span>{t("Priority")} *</span><select value={form.priority} onChange={(event) => setForm({ ...form, priority: event.target.value })}>{requestPriorities.map((item) => <option key={item} value={item}>{t(item)}</option>)}</select></label>
                 <label className="field"><span>{t("Requesting area")}</span><input value={user.area || "General"} disabled title={t("Assigned from the signed-in user profile.")} /></label>
                 <label className="field"><span>{t("School / department")}</span><input value={form.schoolOrDepartment} onChange={(event) => setForm({ ...form, schoolOrDepartment: event.target.value })} /></label>
-                <label className="field"><span>{t("Project")}</span><input value={form.project} onChange={(event) => setForm({ ...form, project: event.target.value })} placeholder={t("Optional project code or name")} /></label>
-                <label className={`field${fieldError("issueDate") ? " field-error" : ""}`}><span>{t("Issue date")} *</span><input type="date" value={form.issueDate} onChange={(event) => setForm({ ...form, issueDate: event.target.value, accountingPeriod: event.target.value.slice(0, 7) })} />{fieldError("issueDate") && <small className="field-error-text">{t(fieldError("issueDate"))}</small>}</label>
-                <label className={`field${fieldError("accountingPeriod") ? " field-error" : ""}`}><span>{t("Accounting period")} *</span><input type="month" value={form.accountingPeriod} onChange={(event) => setForm({ ...form, accountingPeriod: event.target.value })} />{fieldError("accountingPeriod") && <small className="field-error-text">{t(fieldError("accountingPeriod"))}</small>}<small className="field-hint">{t("Closed periods cannot be used.")}</small></label>
+                <label className="field"><span>{t("Project")}</span><select value={form.project} onChange={(event) => setForm({ ...form, project: event.target.value })}><option value="">{t("No project")}</option>{masters.projects.map((item) => <option key={item._id} value={item.code}>{item.code} - {item.name}</option>)}</select></label>
+                <label className={`field${fieldError("issueDate") ? " field-error" : ""}`}><span>{t("Issue date")} *</span><input type="date" value={form.issueDate} onChange={(event) => { const issuePeriod = event.target.value.slice(0, 7); const matchingOpenPeriod = masters.periods.some((item) => item.period === issuePeriod && item.status === "OPEN"); setForm({ ...form, issueDate: event.target.value, accountingPeriod: matchingOpenPeriod ? issuePeriod : form.accountingPeriod }); }} />{fieldError("issueDate") && <small className="field-error-text">{t(fieldError("issueDate"))}</small>}</label>
+                <label className={`field${fieldError("accountingPeriod") ? " field-error" : ""}`}><span>{t("Accounting period")} *</span><select value={form.accountingPeriod} onChange={(event) => setForm({ ...form, accountingPeriod: event.target.value })}><option value="">{t("Select")}</option>{masters.periods.map((item) => <option key={item._id} value={item.period} disabled={item.status !== "OPEN"}>{item.period} - {t(item.status)}</option>)}</select>{fieldError("accountingPeriod") && <small className="field-error-text">{t(fieldError("accountingPeriod"))}</small>}<small className="field-hint">{masters.periods.some((item) => item.status === "OPEN") ? t("Closed periods cannot be used.") : t("No open accounting period is configured.")}</small></label>
                 <label className="field"><span>{t("Currency")} *</span><select value={form.currency} onChange={(event) => setForm({ ...form, currency: event.target.value })}>{currencies.map((currency) => <option key={currency}>{currency}</option>)}</select><small className="field-hint">{form.currency === "USD" ? t("A SUNAT selling rate is required for this date or period.") : t("Exchange rate is fixed at 1.00.")}</small></label>
                 <div className="form-span-two">
                   <SearchSelect
@@ -297,7 +325,7 @@ export default function RequestCreate() {
                     searchPlaceholder="Search by supplier name or RUC/DNI..."
                   />
                   <Link className="inline-link" to="/suppliers">{t("Supplier not found? Register it for homologation")}</Link>
-                  {selectedSupplier && (!selectedSupplier.cci && !selectedSupplier.bankAccount) && <div className="inline-warning"><AlertTriangle size={16} /><span>{t("This supplier has no bank account or CCI. Treasury will not be able to generate payment.")}</span></div>}
+                  {selectedSupplier && !selectedSupplier.bankAccounts?.some((account) => account.active) && <div className="inline-warning"><AlertTriangle size={16} /><span>{t("This supplier has no active bank account. Treasury cannot include it in a bank file until one is registered.")}</span></div>}
                 </div>
                 <label className={`field form-span-two${fieldError("description") ? " field-error" : ""}`}><span>{t("Description")} *</span><textarea rows="4" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} placeholder={t("Describe the business purpose and what is being paid.")} />{fieldError("description") && <small className="field-error-text">{t(fieldError("description"))}</small>}</label>
               </div>
@@ -314,7 +342,7 @@ export default function RequestCreate() {
                     <div className="accounting-line" key={line.clientId}>
                       <div className="line-number">{index + 1}</div>
                       <SearchSelect label="Cost center" value={line.costCenter} options={masters.costCenters} onChange={(value) => updateLine(index, { costCenter: value })} getOptionLabel={(item) => `${item.code} · ${item.name}`} error={fieldError(`lines.${index}.costCenter`)} required searchPlaceholder="Search cost center..." />
-                      <SearchSelect label="Expense type / account" value={line.expenseType} options={masters.expenseTypes} onChange={(value) => updateLine(index, { expenseType: value })} getOptionLabel={(item) => `${item.accountNumber} · ${item.name}`} error={fieldError(`lines.${index}.expenseType`)} required searchPlaceholder="Search expense account..." />
+                      <SearchSelect label="Expense type / account" value={line.expenseType} options={allowedExpenseTypes} onChange={(value) => updateLine(index, { expenseType: value })} getOptionLabel={(item) => `${item.accountNumber} · ${item.name}`} error={fieldError(`lines.${index}.expenseType`)} required searchPlaceholder="Search expense account..." />
                       <label className={`field${fieldError(`lines.${index}.netAmount`) ? " field-error" : ""}`}><span>{t("Net")}</span><input type="number" min="0" step="0.01" value={line.netAmount} onChange={(event) => updateLine(index, { netAmount: event.target.value })} />{fieldError(`lines.${index}.netAmount`) && <small className="field-error-text">{t(fieldError(`lines.${index}.netAmount`))}</small>}</label>
                       <label className={`field${fieldError(`lines.${index}.igvAmount`) ? " field-error" : ""}`}><span>{t("IGV")}</span><input type="number" min="0" step="0.01" value={line.igvAmount} onChange={(event) => updateLine(index, { igvAmount: event.target.value })} />{fieldError(`lines.${index}.igvAmount`) && <small className="field-error-text">{t(fieldError(`lines.${index}.igvAmount`))}</small>}</label>
                       <label className={`field${fieldError(`lines.${index}.totalAmount`) ? " field-error" : ""}`}><span>{t("Total")}</span><input type="number" min="0" step="0.01" value={line.totalAmount} onChange={(event) => updateLine(index, { totalAmount: event.target.value })} />{fieldError(`lines.${index}.totalAmount`) && <small className="field-error-text">{t(fieldError(`lines.${index}.totalAmount`))}</small>}</label>
@@ -362,7 +390,7 @@ export default function RequestCreate() {
             <div className="wizard-step" aria-labelledby="review-heading">
               <div className="section-heading"><div><h3 id="review-heading">{t("Review and submit")}</h3><p>{t("Confirm the request details before sending it into the approval workflow.")}</p></div></div>
               <div className="review-layout">
-                <div className="review-section"><div className="section-heading compact"><h3>{t("Basic information")}</h3><button type="button" className="text-button" onClick={() => goToStep(0)}>{t("Edit")}</button></div><dl className="detail-grid"><div><dt>{t("Request type")}</dt><dd>{t(form.requestType)}</dd></div><div><dt>{t("Expense nature")}</dt><dd>{t(form.expenseNature)}</dd></div><div><dt>{t("Priority")}</dt><dd>{t(form.priority)}</dd></div><div><dt>{t("Supplier")}</dt><dd>{selectedSupplier ? `${selectedSupplier.rucDni} · ${selectedSupplier.name}` : "-"}</dd></div><div><dt>{t("School / department")}</dt><dd>{form.schoolOrDepartment || "-"}</dd></div><div><dt>{t("Project")}</dt><dd>{form.project || "-"}</dd></div><div><dt>{t("Issue date")}</dt><dd>{form.issueDate}</dd></div><div><dt>{t("Accounting period")}</dt><dd>{form.accountingPeriod}</dd></div><div><dt>{t("Currency")}</dt><dd>{form.currency}</dd></div><div className="wide"><dt>{t("Description")}</dt><dd>{form.description}</dd></div></dl></div>
+                <div className="review-section"><div className="section-heading compact"><h3>{t("Basic information")}</h3><button type="button" className="text-button" onClick={() => goToStep(0)}>{t("Edit")}</button></div><dl className="detail-grid"><div><dt>{t("Request type")}</dt><dd>{t(optionLabel(form.requestType, requestTypeLabels))}</dd></div><div><dt>{t("Expense nature")}</dt><dd>{t(optionLabel(form.expenseNature, expenseNatureLabels))}</dd></div><div><dt>{t("Priority")}</dt><dd>{t(form.priority)}</dd></div><div><dt>{t("Supplier")}</dt><dd>{selectedSupplier ? `${selectedSupplier.rucDni} · ${selectedSupplier.name}` : "-"}</dd></div><div><dt>{t("School / department")}</dt><dd>{form.schoolOrDepartment || "-"}</dd></div><div><dt>{t("Project")}</dt><dd>{form.project || "-"}</dd></div><div><dt>{t("Issue date")}</dt><dd>{form.issueDate}</dd></div><div><dt>{t("Accounting period")}</dt><dd>{form.accountingPeriod}</dd></div><div><dt>{t("Currency")}</dt><dd>{form.currency}</dd></div><div className="wide"><dt>{t("Description")}</dt><dd>{form.description}</dd></div></dl></div>
                 <div className="review-section"><div className="section-heading compact"><h3>{t("Accounting lines")}</h3><button type="button" className="text-button" onClick={() => goToStep(1)}>{t("Edit")}</button></div><div className="review-lines">{lines.map((line, index) => { const costCenter = masters.costCenters.find((item) => item._id === line.costCenter); const expense = masters.expenseTypes.find((item) => item._id === line.expenseType); return <div key={line.clientId}><span>{index + 1}</span><div><strong>{costCenter?.code} · {costCenter?.name}</strong><small>{expense?.accountNumber} · {expense?.name}</small></div><strong>{form.currency} {Number(line.totalAmount || 0).toFixed(2)}</strong></div>; })}</div><div className="review-total"><span>{t("Total amount")}</span><strong>{form.currency} {totals.total.toFixed(2)}</strong></div></div>
                 <div className="review-section"><div className="section-heading compact"><h3>{t("Documents")}</h3><button type="button" className="text-button" onClick={() => goToStep(2)}>{t("Edit")}</button></div><div className="review-documents">{existingAttachments.map((file) => <span key={file._id}><FileText size={15} />{file.kind}: {file.originalName}</span>)}{Object.entries(files).flatMap(([kind, selectedFiles]) => selectedFiles.map((file) => <span key={`${kind}-${file.name}`}><FileText size={15} />{kind.toUpperCase()}: {file.name}</span>))}{!existingAttachments.length && !Object.values(files).some((selectedFiles) => selectedFiles.length) && <p>{t("No files attached.")}</p>}</div></div>
               </div>

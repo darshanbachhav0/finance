@@ -8,8 +8,12 @@ import { useToast } from "../context/ToastContext.jsx";
 function payload(form) {
   return {
     ...form,
+    currency: "USD",
+    quoteCurrency: "PEN",
     rate: Number(form.rate || 0),
-    period: form.period || form.date?.slice(0, 7)
+    period: form.period || form.date?.slice(0, 7),
+    authoritative: false,
+    active: true
   };
 }
 
@@ -27,7 +31,10 @@ export default function ExchangeRates() {
         date: onlineRate.date,
         period: onlineRate.period,
         rate: onlineRate.rate,
-        source: onlineRate.source
+        source: onlineRate.source,
+        sourceLabel: onlineRate.sourceLabel,
+        providerMode: onlineRate.providerMode,
+        authoritative: false
       };
       const existing = rows.find((row) => row.date?.slice(0, 10) === onlineRate.date);
 
@@ -46,7 +53,7 @@ export default function ExchangeRates() {
   return (
     <ResourceManager
       title="Exchange Rates"
-      description="Daily SBS selling exchange rates used to convert USD requests to PEN. Load the latest published value online or enter one manually."
+      description="Daily USD/PEN selling rates used for dated conversion. Online BCRP/SBS values are editable references and are not labelled as authoritative SUNAT rates."
       endpoint="/exchange-rates"
       duplicateFields={["date"]}
       transformSubmit={payload}
@@ -66,13 +73,17 @@ export default function ExchangeRates() {
         { name: "date", label: "Date", type: "date", required: true },
         { name: "period", label: "Period", required: true },
         { name: "rate", label: "Selling rate", type: "number", step: "0.0001", min: "0.0001", required: true, validate: (value) => Number(value) > 0 ? "" : "Enter a rate greater than zero.", hint: "You can edit the online value before saving." },
-        { name: "source", label: "Source", defaultValue: "Manual SUNAT selling rate", hint: "Keep the online source or describe the approved manual source." }
+        { name: "source", label: "Source code", defaultValue: "MANUAL", hint: "Use MANUAL unless a configured provider supplied the rate." },
+        { name: "sourceLabel", label: "Source description", defaultValue: "Authorized manual entry", hint: "Keep the online source or describe the approved manual source." },
+        { name: "providerMode", label: "Provider mode", type: "select", defaultValue: "MANUAL", options: ["MANUAL", "BCRP_FALLBACK"] }
       ]}
       columns={[
         { key: "date", label: "Date", render: (row) => row.date?.slice(0, 10) },
         { key: "period", label: "Period" },
         { key: "rate", label: "Rate", render: (row) => Number(row.rate).toFixed(4) },
-        { key: "source", label: "Source" }
+        { key: "sourceLabel", label: "Source", render: (row) => row.sourceLabel || row.source },
+        { key: "providerMode", label: "Mode" },
+        { key: "authoritative", label: "Authoritative SUNAT", render: (row) => row.authoritative ? t("Yes") : t("No") }
       ]}
     />
   );

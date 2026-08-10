@@ -10,12 +10,6 @@ const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || defaultApiUrl()
 });
 
-export function apiAssetUrl(resourcePath) {
-  if (!resourcePath) return "";
-  const apiUrl = new URL(api.defaults.baseURL, window.location.origin);
-  return new URL(resourcePath, `${apiUrl.origin}/`).toString();
-}
-
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem("erp_token");
   if (token) config.headers.Authorization = `Bearer ${token}`;
@@ -32,7 +26,8 @@ api.interceptors.response.use(
   (error) => {
     const message = error.response?.data?.message || error.message || "Unexpected API error.";
     const details = error.response?.data?.details;
-    return Promise.reject({ message, details, status: error.response?.status });
+    const code = error.response?.data?.code || "API_ERROR";
+    return Promise.reject({ message, code, details, status: error.response?.status });
   }
 );
 

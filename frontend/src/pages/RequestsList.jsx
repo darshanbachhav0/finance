@@ -1,5 +1,5 @@
 import { Eye, Pencil, Plus, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import api from "../api/client.js";
 import ConfirmDialog from "../components/ConfirmDialog.jsx";
@@ -11,6 +11,7 @@ import StatusBadge from "../components/StatusBadge.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import { useToast } from "../context/ToastContext.jsx";
+import usePaginatedResource from "../hooks/usePaginatedResource.js";
 import { expenseNatures, requestPriorities, requestStatuses, requestTypes } from "../utils/options.js";
 
 export default function RequestsList() {
@@ -19,33 +20,29 @@ export default function RequestsList() {
   const { notify } = useToast();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const [rows, setRows] = useState([]);
   const [quickViewId, setQuickViewId] = useState(null);
   const [deleteRow, setDeleteRow] = useState(null);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [actionError, setActionError] = useState("");
   const [deleting, setDeleting] = useState(false);
+  const requestsTable = usePaginatedResource("/requests", {
+    initialFilters: { status: searchParams.get("status") || "" }
+  });
+  const periodsResource = usePaginatedResource("/accounting-periods", { initialPageSize: 100, debounceMs: 0 });
+  const { rows, loading } = requestsTable;
 
-  async function load() {
-    setLoading(true);
-    setError("");
-    try {
-      const response = await api.get("/requests");
-      setRows(response.data.data);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => { load(); }, []);
-
-  const periods = useMemo(() => [...new Set(rows.map((row) => row.accountingPeriod))].sort().reverse(), [rows]);
+  const periods = useMemo(() => periodsResource.rows.map((row) => row.period), [periodsResource.rows]);
   const canCreate = ["Admin", "Solicitor"].includes(user.role);
 
+  function isOwner(row) {
+    return user.role === "Admin" || (row.requester?._id || row.solicitor?._id) === user._id;
+  }
+
   function canModify(row) {
-    return ["BORRADOR", "RECHAZADO"].includes(row.status) && (user.role === "Admin" || row.solicitor?._id === user._id);
+    return ["BORRADOR", "RECHAZADO", "OBSERVADO", "DEVUELTO"].includes(row.status) && isOwner(row);
+  }
+
+  function canDelete(row) {
+    return ["BORRADOR", "RECHAZADO"].includes(row.status) && isOwner(row);
   }
 
   async function removeRequest() {
@@ -54,8 +51,10 @@ export default function RequestsList() {
       await api.delete(`/requests/${deleteRow._id}`);
       notify("Draft request permanently deleted.");
       setDeleteRow(null);
-      await load();
+      setActionError("");
+      requestsTable.reload();
     } catch (err) {
+      setActionError(err.message);
       notify(err.message, "error");
     } finally {
       setDeleting(false);
@@ -69,34 +68,34 @@ export default function RequestsList() {
         description="Create, track, submit, and review financial requests by status and accounting period."
         actions={canCreate && <Link className="primary-button" to="/requests/new"><Plus size={16} /><span>{t("New request")}</span></Link>}
       />
-      <Message type="error">{error}</Message>
+      <Message type="error">{actionError || requestsTable.error}</Message>
       <div className="workspace-panel">
         <DataTable
           rows={rows}
           loading={loading}
+          remote={requestsTable.remote}
           filters={[
             { key: "status", label: "statuses", allLabel: "All statuses", options: requestStatuses },
             { key: "requestType", label: "types", allLabel: "All types", options: requestTypes },
             { key: "expenseNature", label: "expense natures", allLabel: "All expense natures", options: expenseNatures },
             { key: "priority", label: "priorities", allLabel: "All priorities", options: requestPriorities },
-            { key: "accountingPeriod", label: "periods", allLabel: "All periods", options: periods }
+            { key: "period", getValue: (row) => row.accountingPeriod, label: "periods", allLabel: "All periods", options: periods }
           ]}
-          initialFilters={{ status: searchParams.get("status") || "" }}
           searchPlaceholder="Search request, supplier, solicitor..."
           onRowClick={(row) => setQuickViewId(row._id)}
           rowActions={(row) => [
             { label: "Quick view", icon: Eye, onClick: () => setQuickViewId(row._id) },
             { label: "Open full details", icon: Eye, onClick: () => navigate(`/requests/${row._id}`) },
             { label: "Edit request", icon: Pencil, hidden: !canModify(row), onClick: () => navigate(`/requests/${row._id}/edit`) },
-            { label: "Delete permanently", icon: Trash2, tone: "danger", hidden: !canModify(row), onClick: () => setDeleteRow(row) }
+            { label: "Delete permanently", icon: Trash2, tone: "danger", hidden: !canDelete(row), onClick: () => setDeleteRow(row) }
           ]}
           columns={[
             { key: "requestNumber", label: "Request", render: (row) => <Link to={`/requests/${row._id}`}>{row.requestNumber}</Link> },
             { key: "requestType", label: "Type" },
             { key: "expenseNature", label: "Expense nature" },
             { key: "priority", label: "Priority", render: (row) => <span className={`priority priority-${String(row.priority || "MEDIA").toLowerCase()}`}>{t(row.priority || "MEDIA")}</span> },
-            { key: "supplier", label: "Supplier", getValue: (row) => row.supplier?.name, render: (row) => <div className="primary-cell"><strong>{row.supplier?.name || "-"}</strong><span>{row.supplier?.rucDni}</span></div> },
-            { key: "solicitor", label: "Solicitor", getValue: (row) => row.solicitor?.name, render: (row) => row.solicitor?.name || "-" },
+            { key: "supplier", label: "Supplier", sortable: false, getValue: (row) => row.supplier?.name, render: (row) => <div className="primary-cell"><strong>{row.supplier?.name || "-"}</strong><span>{row.supplier?.rucDni}</span></div> },
+            { key: "solicitor", label: "Solicitor", sortable: false, getValue: (row) => row.solicitor?.name, render: (row) => row.solicitor?.name || "-" },
             { key: "accountingPeriod", label: "Period" },
             { key: "totalAmount", label: "Amount", align: "right", render: (row) => <strong>{row.currency} {Number(row.totalAmount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong> },
             { key: "status", label: "Status", render: (row) => <StatusBadge status={row.status} /> },

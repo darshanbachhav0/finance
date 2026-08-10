@@ -3,6 +3,7 @@ import {
   consolidationPreview,
   exportConsolidation,
   listAccountingExports,
+  listAccountsPayable,
   listEntries,
   listPendingAccounting,
   processPayable
@@ -14,6 +15,7 @@ const router = Router();
 
 router.use(protect, authorize(ROLES.ADMIN, ROLES.ACCOUNTING));
 router.get("/entries", listEntries);
+router.get("/accounts-payable", listAccountsPayable);
 router.get("/pending", listPendingAccounting);
 router.post("/requests/:id/process", processPayable);
 router.get("/consolidation", consolidationPreview);

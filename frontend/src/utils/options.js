@@ -1,53 +1,85 @@
 export const requestTypes = [
   "OPEX",
   "CAPEX",
-  "Entrega a Rendir",
-  "Reembolso con Sustento",
-  "Reembolso sin Sustento",
-  "Pago con Cotización"
+  "ENTREGA_RENDIR",
+  "REEMBOLSO_CON_SUSTENTO",
+  "REEMBOLSO_SIN_SUSTENTO",
+  "PAGO_CON_COTIZACION"
 ];
 
 export const requestStatuses = [
   "BORRADOR",
   "EN_VALIDACION",
+  "ENVIADO",
   "PENDIENTE_APROBACION",
-  "OBSERVADO",
-  "DEVUELTO",
   "APROBADO_DIRECTOR",
   "APROBADO_VICERRECTOR",
   "COMPROMISO_PRESUPUESTAL",
   "CONTABILIZADO",
   "PROGRAMADO",
-  "RECHAZADO",
-  "APROBADO_POR_PAGAR",
   "TXT_GENERADO",
-  "PROCESADO_BANCO",
   "PAGADO",
   "CONCILIADO",
   "RENDICION_PENDIENTE",
-  "LIQUIDADO_CERRADO",
+  "CERRADO",
+  "OBSERVADO",
+  "DEVUELTO",
+  "RECHAZADO",
   "ANULADO"
 ];
 
 export const currencies = ["PEN", "USD"];
 
 export const expenseNatures = [
-  "Compra de Bienes",
-  "Contratación de Servicios",
-  "Honorarios Profesionales",
-  "Publicidad",
-  "Viajes",
-  "Equipamiento",
-  "Tecnología",
-  "Infraestructura",
-  "Laboratorios",
-  "Biblioteca",
-  "Investigación",
-  "Mantenimiento",
-  "Caja Chica",
-  "Reembolso / Liquidación"
+  "GOODS",
+  "SERVICES",
+  "PROFESSIONAL_FEES",
+  "CONSULTING",
+  "ADVERTISING",
+  "TRAVEL",
+  "EQUIPMENT",
+  "TECHNOLOGY",
+  "INFRASTRUCTURE",
+  "LABORATORIES",
+  "LIBRARY",
+  "RESEARCH",
+  "MAINTENANCE",
+  "PETTY_CASH",
+  "REIMBURSEMENT_LIQUIDATION"
 ];
 
 export const requestPriorities = ["BAJA", "MEDIA", "ALTA"];
-export const approvalLevels = ["AREA_DIRECTOR", "VICE_RECTOR"];
+export const approvalLevels = ["AREA_DIRECTOR", "VICE_RECTOR", "RECTORATE", "GENERAL_MANAGEMENT"];
 export const banks = ["BCP", "BBVA", "INTERBANK", "SCOTIABANK"];
+export const roles = ["Admin", "Solicitor", "Approver", "Accounting", "Treasury", "Budget", "Management"];
+
+export const requestTypeLabels = {
+  OPEX: "OPEX",
+  CAPEX: "CAPEX",
+  ENTREGA_RENDIR: "Advance to account",
+  REEMBOLSO_CON_SUSTENTO: "Supported reimbursement",
+  REEMBOLSO_SIN_SUSTENTO: "Unsupported reimbursement",
+  PAGO_CON_COTIZACION: "Quotation-based payment"
+};
+
+export const expenseNatureLabels = {
+  GOODS: "Purchase of goods",
+  SERVICES: "Services",
+  PROFESSIONAL_FEES: "Professional fees",
+  CONSULTING: "Consulting",
+  ADVERTISING: "Advertising",
+  TRAVEL: "Travel",
+  EQUIPMENT: "Equipment",
+  TECHNOLOGY: "Technology",
+  INFRASTRUCTURE: "Infrastructure",
+  LABORATORIES: "Laboratories",
+  LIBRARY: "Library",
+  RESEARCH: "Research",
+  MAINTENANCE: "Maintenance",
+  PETTY_CASH: "Petty cash",
+  REIMBURSEMENT_LIQUIDATION: "Reimbursement / liquidation"
+};
+
+export function optionLabel(value, labels = {}) {
+  return labels[value] || value;
+}

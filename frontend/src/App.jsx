@@ -1,27 +1,45 @@
+import { lazy, Suspense } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import AppLayout from "./layouts/AppLayout.jsx";
 import ProtectedRoute from "./routes/ProtectedRoute.jsx";
-import AccountingEntries from "./pages/AccountingEntries.jsx";
-import AccountingPeriods from "./pages/AccountingPeriods.jsx";
-import AdminUsers from "./pages/AdminUsers.jsx";
-import ApprovalInbox from "./pages/ApprovalInbox.jsx";
-import CostCenters from "./pages/CostCenters.jsx";
-import Dashboard from "./pages/Dashboard.jsx";
-import ExchangeRates from "./pages/ExchangeRates.jsx";
-import ExpenseTypes from "./pages/ExpenseTypes.jsx";
-import Login from "./pages/Login.jsx";
-import RequestCreate from "./pages/RequestCreate.jsx";
-import RequestDetail from "./pages/RequestDetail.jsx";
-import RequestsList from "./pages/RequestsList.jsx";
-import SireExport from "./pages/SireExport.jsx";
-import Suppliers from "./pages/Suppliers.jsx";
-import TreasuryQueue from "./pages/TreasuryQueue.jsx";
-import BudgetControl from "./pages/BudgetControl.jsx";
-import ManagementReports from "./pages/ManagementReports.jsx";
+
+const AccountingEntries = lazy(() => import("./pages/AccountingEntries.jsx"));
+const AccountsPayable = lazy(() => import("./pages/AccountsPayable.jsx"));
+const AccountingPeriods = lazy(() => import("./pages/AccountingPeriods.jsx"));
+const AdminUsers = lazy(() => import("./pages/AdminUsers.jsx"));
+const ApprovalInbox = lazy(() => import("./pages/ApprovalInbox.jsx"));
+const CostCenters = lazy(() => import("./pages/CostCenters.jsx"));
+const Dashboard = lazy(() => import("./pages/Dashboard.jsx"));
+const ExchangeRates = lazy(() => import("./pages/ExchangeRates.jsx"));
+const ExpenseTypes = lazy(() => import("./pages/ExpenseTypes.jsx"));
+const Login = lazy(() => import("./pages/Login.jsx"));
+const RequestCreate = lazy(() => import("./pages/RequestCreate.jsx"));
+const RequestDetail = lazy(() => import("./pages/RequestDetail.jsx"));
+const RequestsList = lazy(() => import("./pages/RequestsList.jsx"));
+const SireExport = lazy(() => import("./pages/SireExport.jsx"));
+const Suppliers = lazy(() => import("./pages/Suppliers.jsx"));
+const TreasuryQueue = lazy(() => import("./pages/TreasuryQueue.jsx"));
+const BudgetControl = lazy(() => import("./pages/BudgetControl.jsx"));
+const ManagementReports = lazy(() => import("./pages/ManagementReports.jsx"));
+const MasterConfiguration = lazy(() => import("./pages/MasterConfiguration.jsx"));
+const AuditViewer = lazy(() => import("./pages/AuditViewer.jsx"));
+
+function RouteFallback() {
+  return (
+    <div className="route-loading" role="status" aria-live="polite">
+      <span className="skeleton skeleton-heading" />
+      <span className="skeleton skeleton-line" />
+      <div className="skeleton-table">
+        {Array.from({ length: 6 }, (_, index) => <span className="skeleton skeleton-row" key={index} />)}
+      </div>
+      <span className="sr-only">Loading...</span>
+    </div>
+  );
+}
 
 export default function App() {
   return (
-    <Routes>
+    <Suspense fallback={<RouteFallback />}><Routes>
       <Route path="/login" element={<Login />} />
       <Route element={<ProtectedRoute />}>
         <Route element={<AppLayout />}>
@@ -34,21 +52,22 @@ export default function App() {
             <Route index element={<RequestCreate />} />
           </Route>
           <Route path="requests/:id" element={<RequestDetail />} />
-          <Route path="approvals" element={<ProtectedRoute roles={["Admin", "Approver"]} />}>
+          <Route path="approvals" element={<ProtectedRoute roles={["Admin", "Approver", "Management"]} />}>
             <Route index element={<ApprovalInbox />} />
           </Route>
           <Route path="accounting" element={<ProtectedRoute roles={["Admin", "Accounting"]} />}>
             <Route index element={<AccountingEntries />} />
+            <Route path="payables" element={<AccountsPayable />} />
             <Route path="periods" element={<AccountingPeriods />} />
             <Route path="sire" element={<SireExport />} />
           </Route>
           <Route path="treasury" element={<ProtectedRoute roles={["Admin", "Treasury"]} />}>
             <Route index element={<TreasuryQueue />} />
           </Route>
-          <Route path="budget" element={<ProtectedRoute roles={["Admin", "Approver", "Accounting"]} />}>
+          <Route path="budget" element={<ProtectedRoute roles={["Admin", "Approver", "Accounting", "Budget", "Management"]} />}>
             <Route index element={<BudgetControl />} />
           </Route>
-          <Route path="reports" element={<ProtectedRoute roles={["Admin", "Approver", "Accounting", "Treasury"]} />}>
+          <Route path="reports" element={<ProtectedRoute roles={["Admin", "Approver", "Accounting", "Treasury", "Budget", "Management"]} />}>
             <Route index element={<ManagementReports />} />
           </Route>
           <Route path="suppliers" element={<ProtectedRoute roles={["Admin", "Accounting", "Treasury", "Solicitor"]} />}>
@@ -66,9 +85,15 @@ export default function App() {
           <Route path="users" element={<ProtectedRoute roles={["Admin"]} />}>
             <Route index element={<AdminUsers />} />
           </Route>
+          <Route path="configuration/:resource" element={<ProtectedRoute roles={["Admin", "Accounting", "Budget"]} />}>
+            <Route index element={<MasterConfiguration />} />
+          </Route>
+          <Route path="audit" element={<ProtectedRoute roles={["Admin", "Accounting"]} />}>
+            <Route index element={<AuditViewer />} />
+          </Route>
         </Route>
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+    </Routes></Suspense>
   );
 }

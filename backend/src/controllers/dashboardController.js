@@ -1,244 +1,222 @@
-import AccountingEntry from "../models/AccountingEntry.js";
+import AccountsPayable from "../models/AccountsPayable.js";
 import AccountingPeriod from "../models/AccountingPeriod.js";
+import AuditLog from "../models/AuditLog.js";
+import BudgetException from "../models/BudgetException.js";
 import ExchangeRate from "../models/ExchangeRate.js";
 import FinancialRequest from "../models/FinancialRequest.js";
-import GeneratedFile from "../models/GeneratedFile.js";
+import JournalEntry from "../models/JournalEntry.js";
+import PaymentBatch from "../models/PaymentBatch.js";
 import Supplier from "../models/Supplier.js";
+import SupplierBankAccount from "../models/SupplierBankAccount.js";
 import User from "../models/User.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
-import { APPROVAL_STAGES, REQUEST_STATUS, ROLES } from "../utils/constants.js";
-
-const populatedRequest = [
-  { path: "supplier", select: "name rucDni bankName bankAccount cci status" },
-  { path: "solicitor", select: "name email role area" }
-];
+import { budgetOverview } from "../services/budgetOverviewService.js";
+import { APPROVAL_STAGES, AP_STATUS, REQUEST_STATUS, ROLES } from "../utils/constants.js";
 
 function currentPeriod() {
-  const now = new Date();
-  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+  return new Date().toISOString().slice(0, 7);
 }
 
-function requestScope(user) {
-  return user.role === ROLES.SOLICITOR ? { solicitor: user._id } : {};
+function ownerScope(user) {
+  return user.role === ROLES.SOLICITOR ? { $or: [{ requester: user._id }, { solicitor: user._id }] } : {};
 }
 
-async function missingExchangeRatePeriods() {
-  const usedPeriods = await FinancialRequest.distinct("accountingPeriod", {
-    currency: "USD",
-    status: { $ne: REQUEST_STATUS.CLOSED }
-  });
-  if (!usedPeriods.length) return [];
-  const configured = await ExchangeRate.distinct("period", { period: { $in: usedPeriods } });
-  return usedPeriods.filter((period) => !configured.includes(period)).sort();
+function approvalScope(user) {
+  const query = { status: { $in: [REQUEST_STATUS.PENDING_APPROVAL, REQUEST_STATUS.DIRECTOR_APPROVED, REQUEST_STATUS.VICE_RECTOR_APPROVED] } };
+  if (user.role !== ROLES.ADMIN) {
+    query.approvalStage = user.approvalLevel || APPROVAL_STAGES.AREA_DIRECTOR;
+    if (query.approvalStage === APPROVAL_STAGES.AREA_DIRECTOR) {
+      const areas = [user.area, ...(user.approvalAreas || [])].filter(Boolean);
+      if (!areas.includes("*")) query.$or = [{ requesterArea: { $in: areas } }, { requestingArea: { $in: areas } }];
+    }
+  }
+  return query;
+}
+
+async function missingExchangeRateDates() {
+  const requests = await FinancialRequest.find({ currency: "USD", status: { $nin: [REQUEST_STATUS.CLOSED, REQUEST_STATUS.VOIDED] } }).select("issueDate").lean();
+  const dates = [...new Set(requests.map((request) => new Date(request.issueDate).toISOString().slice(0, 10)))];
+  if (!dates.length) return [];
+  const configured = await ExchangeRate.find({ active: true, date: { $in: dates.map((value) => new Date(`${value}T00:00:00.000Z`)) } }).select("date").lean();
+  const available = new Set(configured.map((item) => item.date.toISOString().slice(0, 10)));
+  return dates.filter((date) => !available.has(date)).sort();
 }
 
 async function buildTasks(user) {
-  const taskQueries = [];
-  const definitions = [];
-
-  if ([ROLES.ADMIN, ROLES.APPROVER].includes(user.role)) {
-    const approvalQuery = { status: { $in: [REQUEST_STATUS.PENDING_APPROVAL, REQUEST_STATUS.DIRECTOR_APPROVED] } };
-    if (user.role === ROLES.APPROVER) {
-      const level = user.approvalLevel || APPROVAL_STAGES.AREA_DIRECTOR;
-      if (level === APPROVAL_STAGES.AREA_DIRECTOR) approvalQuery.$or = [{ approvalStage: level }, { approvalStage: { $exists: false } }];
-      else approvalQuery.approvalStage = level;
-    }
-    taskQueries.push(FinancialRequest.countDocuments(approvalQuery));
-    definitions.push({ key: "approval", label: "Requests awaiting approval", path: "/approvals", tone: "amber" });
-    taskQueries.push(FinancialRequest.countDocuments({ ...approvalQuery, approvalDueAt: { $lt: new Date() } }));
-    definitions.push({ key: "approvalOverdue", label: "Approval SLA overdue", path: "/approvals", tone: "red" });
+  const items = [];
+  if ([ROLES.ADMIN, ROLES.APPROVER, ROLES.MANAGEMENT].includes(user.role)) {
+    const query = approvalScope(user);
+    const [count, overdue] = await Promise.all([
+      FinancialRequest.countDocuments(query),
+      FinancialRequest.countDocuments({ ...query, approvalDueAt: { $lt: new Date() } })
+    ]);
+    items.push({ key: "approval", label: "Requests awaiting approval", count, path: "/approvals", tone: "amber" });
+    items.push({ key: "approvalOverdue", label: "Approval SLA overdue", count: overdue, path: "/approvals", tone: "red" });
   }
   if ([ROLES.ADMIN, ROLES.TREASURY].includes(user.role)) {
-    taskQueries.push(FinancialRequest.countDocuments({ status: REQUEST_STATUS.APPROVED_PAYABLE }));
-    definitions.push({ key: "payable", label: "Requests ready for payment", path: "/treasury", tone: "teal" });
+    const payable = await AccountsPayable.countDocuments({ status: { $in: [AP_STATUS.OPEN, AP_STATUS.SCHEDULED] } });
+    const confirmation = await AccountsPayable.countDocuments({ status: AP_STATUS.PAYMENT_FILE_CREATED });
+    items.push({ key: "payable", label: "CXP ready for Treasury", count: payable, path: "/treasury", tone: "teal" });
+    items.push({ key: "paymentConfirmation", label: "Payments awaiting confirmation", count: confirmation, path: "/treasury", tone: "amber" });
   }
   if ([ROLES.ADMIN, ROLES.ACCOUNTING, ROLES.SOLICITOR].includes(user.role)) {
     const query = { status: REQUEST_STATUS.RENDITION_PENDING };
-    if (user.role === ROLES.SOLICITOR) query.solicitor = user._id;
-    taskQueries.push(FinancialRequest.countDocuments(query));
-    definitions.push({ key: "rendition", label: "Renditions outstanding", path: "/requests?status=RENDICION_PENDIENTE", tone: "amber" });
+    if (user.role === ROLES.SOLICITOR) query.$or = [{ requester: user._id }, { solicitor: user._id }];
+    items.push({ key: "rendition", label: "Renditions outstanding", count: await FinancialRequest.countDocuments(query), path: "/requests?status=RENDICION_PENDIENTE", tone: "amber" });
   }
   if ([ROLES.ADMIN, ROLES.ACCOUNTING].includes(user.role)) {
-    taskQueries.push(FinancialRequest.countDocuments({ status: REQUEST_STATUS.BUDGET_COMMITTED }));
-    definitions.push({ key: "accounting", label: "Requests awaiting fiscal processing", path: "/accounting", tone: "teal" });
-    taskQueries.push(Supplier.countDocuments({ status: "PENDING_VALIDATION" }));
-    definitions.push({ key: "suppliers", label: "Suppliers awaiting homologation", path: "/suppliers", tone: "amber" });
-  }
-
-  const counts = await Promise.all(taskQueries);
-  const items = definitions.map((definition, index) => ({ ...definition, count: counts[index] }));
-
-  if ([ROLES.ADMIN, ROLES.ACCOUNTING].includes(user.role)) {
-    const missingPeriods = await missingExchangeRatePeriods();
-    items.push({
-      key: "missingExchangeRate",
-      label: "Periods missing exchange rates",
-      count: missingPeriods.length,
-      path: "/exchange-rates",
-      tone: "red",
-      details: missingPeriods
-    });
+    items.push({ key: "accounting", label: "Requests awaiting fiscal processing", count: await FinancialRequest.countDocuments({ status: REQUEST_STATUS.BUDGET_COMMITTED }), path: "/accounting", tone: "teal" });
+    items.push({ key: "suppliers", label: "Suppliers awaiting homologation", count: await Supplier.countDocuments({ homologationStatus: "PENDING_VALIDATION" }), path: "/suppliers", tone: "amber" });
+    const missingDates = await missingExchangeRateDates();
+    items.push({ key: "missingExchangeRate", label: "Missing exchange-rate dates", count: missingDates.length, details: missingDates, path: "/exchange-rates", tone: "red" });
     const period = await AccountingPeriod.findOne({ period: currentPeriod() });
-    items.push({
-      key: "period",
-      label: period?.status === "CLOSED" ? "Current accounting period is closed" : "Accounting period needs review",
-      count: !period || period.status === "CLOSED" ? 1 : 0,
-      path: "/accounting/periods",
-      tone: "amber"
-    });
+    items.push({ key: "period", label: period?.status === "OPEN" ? "Current accounting period open" : "Current accounting period unavailable", count: period?.status === "OPEN" ? 0 : 1, path: "/accounting/periods", tone: "amber" });
   }
-
-  return {
-    items,
-    total: items.reduce((sum, item) => sum + Number(item.count || 0), 0),
-    counters: Object.fromEntries(items.map((item) => [item.key, item.count]))
-  };
+  if ([ROLES.ADMIN, ROLES.BUDGET].includes(user.role)) {
+    items.push({ key: "budgetExceptions", label: "Budget exceptions pending", count: await BudgetException.countDocuments({ status: "PENDING" }), path: "/budget", tone: "red" });
+  }
+  return { items, total: items.reduce((sum, item) => sum + Number(item.count || 0), 0), counters: Object.fromEntries(items.map((item) => [item.key, item.count])) };
 }
 
 async function commonSummary(user) {
-  const scope = requestScope(user);
+  const scope = ownerScope(user);
   const [total, byStatus, byType, byCurrency, recentRequests] = await Promise.all([
     FinancialRequest.countDocuments(scope),
     FinancialRequest.aggregate([{ $match: scope }, { $group: { _id: "$status", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
-    FinancialRequest.aggregate([{ $match: scope }, { $group: { _id: "$requestType", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
-    FinancialRequest.aggregate([
-      { $match: scope },
-      { $group: { _id: "$currency", totalAmount: { $sum: "$totalAmount" }, penEquivalent: { $sum: "$penEquivalent" } } }
-    ]),
-    FinancialRequest.find(scope).populate(populatedRequest).sort({ updatedAt: -1 }).limit(8)
+    FinancialRequest.aggregate([{ $match: scope }, { $group: { _id: "$requestType", count: { $sum: 1 }, amount: { $sum: "$totalPENEquivalent" } } }, { $sort: { amount: -1 } }]),
+    FinancialRequest.aggregate([{ $match: scope }, { $group: { _id: "$currency", totalAmount: { $sum: "$totalAmount" }, penEquivalent: { $sum: "$totalPENEquivalent" } } }]),
+    FinancialRequest.find(scope).populate("supplier", "name legalName rucDni").populate("requester", "name area").sort({ updatedAt: -1 }).limit(8)
   ]);
   return { total, byStatus, byType, byCurrency, recentRequests };
 }
 
-function countStatus(byStatus, status) {
-  return byStatus.find((item) => item._id === status)?.count || 0;
+function statusCount(common, status) {
+  return common.byStatus.find((item) => item._id === status)?.count || 0;
 }
 
 async function roleDetails(user, common) {
   const metrics = [];
   const warnings = [];
   const data = {};
+  const period = currentPeriod();
 
   if (user.role === ROLES.ADMIN) {
-    const [activeUsers, inactiveUsers, missingBank, recentFiles] = await Promise.all([
+    const [activeUsers, pendingSuppliers, blockedActions, recentActivity] = await Promise.all([
       User.countDocuments({ active: true }),
-      User.countDocuments({ active: false }),
-      Supplier.countDocuments({ status: "ACTIVE", $and: [{ $or: [{ cci: { $exists: false } }, { cci: "" }] }, { $or: [{ bankAccount: { $exists: false } }, { bankAccount: "" }] }] }),
-      GeneratedFile.find().populate("generatedBy", "name role").sort({ createdAt: -1 }).limit(6)
+      Supplier.countDocuments({ homologationStatus: "PENDING_VALIDATION" }),
+      AuditLog.countDocuments({ blocked: true, createdAt: { $gte: new Date(Date.now() - 30 * 86400000) } }),
+      AuditLog.find().populate("user", "name role").sort({ createdAt: -1 }).limit(8)
     ]);
     metrics.push(
-      { key: "total", label: "Total requests", value: common.total, tone: "navy" },
-      { key: "pending", label: "Pending approval", value: countStatus(common.byStatus, REQUEST_STATUS.PENDING_APPROVAL) + countStatus(common.byStatus, REQUEST_STATUS.DIRECTOR_APPROVED), tone: "amber" },
-      { key: "payable", label: "Approved / payable", value: countStatus(common.byStatus, REQUEST_STATUS.APPROVED_PAYABLE), tone: "teal" },
+      { key: "requests", label: "Total requests", value: common.total, tone: "navy" },
       { key: "users", label: "Active users", value: activeUsers, tone: "green" },
-      { key: "closed", label: "Closed requests", value: countStatus(common.byStatus, REQUEST_STATUS.CLOSED), tone: "neutral" }
+      { key: "workflow", label: "In active workflow", value: common.total - statusCount(common, REQUEST_STATUS.CLOSED) - statusCount(common, REQUEST_STATUS.VOIDED), tone: "teal" },
+      { key: "supplierWarnings", label: "Supplier validations", value: pendingSuppliers, tone: "amber" },
+      { key: "blocked", label: "Blocked controls (30d)", value: blockedActions, tone: blockedActions ? "red" : "neutral" }
     );
-    if (missingBank) warnings.push({ key: "missingBank", label: "Active suppliers missing bank details", count: missingBank, path: "/suppliers", tone: "red" });
-    if (inactiveUsers) warnings.push({ key: "inactiveUsers", label: "Inactive user accounts", count: inactiveUsers, path: "/users", tone: "neutral" });
-    data.recentFiles = recentFiles;
+    data.recentActivity = recentActivity;
   }
 
   if (user.role === ROLES.SOLICITOR) {
     metrics.push(
-      { key: "drafts", label: "My drafts", value: countStatus(common.byStatus, REQUEST_STATUS.DRAFT), tone: "neutral" },
-      { key: "rejected", label: "Rejected requests", value: countStatus(common.byStatus, REQUEST_STATUS.REJECTED), tone: "red" },
-      { key: "pending", label: "Pending approval", value: countStatus(common.byStatus, REQUEST_STATUS.PENDING_APPROVAL) + countStatus(common.byStatus, REQUEST_STATUS.DIRECTOR_APPROVED), tone: "amber" },
-      { key: "rendition", label: "Rendition tasks", value: countStatus(common.byStatus, REQUEST_STATUS.RENDITION_PENDING), tone: "teal" },
-      { key: "closed", label: "Completed requests", value: countStatus(common.byStatus, REQUEST_STATUS.CLOSED), tone: "green" }
+      { key: "drafts", label: "My drafts", value: statusCount(common, REQUEST_STATUS.DRAFT), tone: "neutral" },
+      { key: "returned", label: "Returned / observed", value: statusCount(common, REQUEST_STATUS.RETURNED) + statusCount(common, REQUEST_STATUS.OBSERVED) + statusCount(common, REQUEST_STATUS.REJECTED), tone: "red" },
+      { key: "pending", label: "Pending approvals", value: statusCount(common, REQUEST_STATUS.PENDING_APPROVAL) + statusCount(common, REQUEST_STATUS.DIRECTOR_APPROVED) + statusCount(common, REQUEST_STATUS.VICE_RECTOR_APPROVED), tone: "amber" },
+      { key: "rendition", label: "Rendition tasks", value: statusCount(common, REQUEST_STATUS.RENDITION_PENDING), tone: "teal" },
+      { key: "closed", label: "Closed requests", value: statusCount(common, REQUEST_STATUS.CLOSED), tone: "green" }
     );
   }
 
   if (user.role === ROLES.APPROVER) {
-    const level = user.approvalLevel || APPROVAL_STAGES.AREA_DIRECTOR;
-    const approvalQuery = { status: { $in: [REQUEST_STATUS.PENDING_APPROVAL, REQUEST_STATUS.DIRECTOR_APPROVED] } };
-    if (level === APPROVAL_STAGES.AREA_DIRECTOR) approvalQuery.$or = [{ approvalStage: level }, { approvalStage: { $exists: false } }];
-    else approvalQuery.approvalStage = level;
-    const [waitingTotals, oldest, decisions] = await Promise.all([
-      FinancialRequest.aggregate([
-        { $match: approvalQuery },
-        { $group: { _id: null, amount: { $sum: "$penEquivalent" }, count: { $sum: 1 } } }
-      ]),
-      FinancialRequest.find(approvalQuery).populate(populatedRequest).sort({ approvalDueAt: 1 }).limit(6),
-      FinancialRequest.find({ approvalHistory: { $elemMatch: { actor: user._id, action: { $in: ["DIRECTOR_APPROVED", "VICE_RECTOR_APPROVED", "REJECTED"] } } } })
-        .populate(populatedRequest)
-        .sort({ updatedAt: -1 })
-        .limit(6)
+    const query = approvalScope(user);
+    const [waiting, oldest, decisions] = await Promise.all([
+      FinancialRequest.aggregate([{ $match: query }, { $group: { _id: null, amount: { $sum: "$totalPENEquivalent" }, count: { $sum: 1 } } }]),
+      FinancialRequest.find(query).populate("supplier", "name legalName").sort({ approvalDueAt: 1 }).limit(6),
+      FinancialRequest.find({ "approvalHistory.actor": user._id }).populate("supplier", "name legalName").sort({ updatedAt: -1 }).limit(6)
     ]);
-    const waiting = waitingTotals[0] || { amount: 0, count: 0 };
+    const summary = waiting[0] || { amount: 0, count: 0 };
     metrics.push(
-      { key: "pending", label: "Pending approval", value: waiting.count, tone: "amber" },
-      { key: "amount", label: "PEN equivalent waiting", value: waiting.amount, tone: "teal", format: "currency" },
-      { key: "oldest", label: "Oldest request age", value: oldest[0] ? Math.max(0, Math.floor((Date.now() - oldest[0].createdAt.getTime()) / 86400000)) : 0, suffix: "days", tone: "navy" },
-      { key: "decisions", label: "Recent decisions", value: decisions.length, tone: "green" }
+      { key: "pending", label: "Pending approvals", value: summary.count, tone: "amber" },
+      { key: "amount", label: "PEN waiting", value: summary.amount, tone: "teal", format: "currency" },
+      { key: "oldest", label: "Oldest approval", value: oldest[0] ? Math.max(0, Math.floor((Date.now() - oldest[0].createdAt.getTime()) / 86400000)) : 0, suffix: "days", tone: "navy" },
+      { key: "overdue", label: "SLA overdue", value: await FinancialRequest.countDocuments({ ...query, approvalDueAt: { $lt: new Date() } }), tone: "red" }
     );
     data.oldestRequests = oldest;
     data.recentDecisions = decisions;
   }
 
-  if (user.role === ROLES.ACCOUNTING) {
-    const period = currentPeriod();
-    const [periodRecord, entryTotals, pendingClosures, periods, missingPeriods] = await Promise.all([
-      AccountingPeriod.findOne({ period }),
-      AccountingEntry.aggregate([
-        { $match: { period } },
-        { $group: { _id: null, entries: { $sum: 1 }, debit: { $sum: "$debit" }, credit: { $sum: "$credit" } } }
-      ]),
-      FinancialRequest.countDocuments({ status: { $in: [REQUEST_STATUS.APPROVED_PAYABLE, REQUEST_STATUS.BANK_PROCESSED] } }),
-      AccountingPeriod.find().populate("closedBy", "name").sort({ period: -1 }).limit(6),
-      missingExchangeRatePeriods()
+  if (user.role === ROLES.MANAGEMENT) {
+    const [overview, pendingCommitments] = await Promise.all([
+      budgetOverview({ period }),
+      FinancialRequest.countDocuments({ status: { $in: [REQUEST_STATUS.VICE_RECTOR_APPROVED, REQUEST_STATUS.BUDGET_COMMITTED] } })
     ]);
-    const entries = entryTotals[0] || { entries: 0, debit: 0, credit: 0 };
+    const typeTotals = new Map(common.byType.map((item) => [item._id, item.amount || 0]));
+    const totalSpend = common.byType.reduce((sum, item) => sum + Number(item.amount || 0), 0);
     metrics.push(
-      { key: "period", label: "Current period", value: periodRecord?.status || "NOT_CREATED", tone: periodRecord?.status === "OPEN" ? "green" : "amber", format: "text" },
-      { key: "entries", label: "Entries this period", value: entries.entries, tone: "navy" },
-      { key: "debit", label: "Debit total", value: entries.debit, tone: "teal", format: "currency" },
-      { key: "credit", label: "Credit total", value: entries.credit, tone: "neutral", format: "currency" },
-      { key: "closures", label: "Pending closures", value: pendingClosures, tone: "amber" }
+      { key: "spend", label: "Controlled spend", value: totalSpend, format: "currency", tone: "navy" },
+      { key: "capex", label: "CAPEX", value: typeTotals.get("CAPEX") || 0, format: "currency", tone: "teal" },
+      { key: "opex", label: "OPEX", value: typeTotals.get("OPEX") || 0, format: "currency", tone: "neutral" },
+      { key: "available", label: "Budget available", value: overview.totals.available, format: "currency", tone: "green" },
+      { key: "commitments", label: "Pending commitments", value: pendingCommitments, tone: "amber" }
     );
-    if (missingPeriods.length) warnings.push({ key: "missingRates", label: "Periods missing exchange rates", count: missingPeriods.length, details: missingPeriods, path: "/exchange-rates", tone: "red" });
-    data.periods = periods;
+    data.budget = overview;
+  }
+
+  if (user.role === ROLES.ACCOUNTING) {
+    const [periodRecord, journals, cxp, pendingClosure, missingDates] = await Promise.all([
+      AccountingPeriod.findOne({ period }),
+      JournalEntry.aggregate([{ $match: { period, status: "POSTED" } }, { $group: { _id: null, count: { $sum: 1 }, debit: { $sum: "$totalDebit" }, credit: { $sum: "$totalCredit" } } }]),
+      AccountsPayable.countDocuments({ status: { $ne: AP_STATUS.CANCELLED } }),
+      FinancialRequest.countDocuments({ accountingPeriod: period, status: { $nin: [REQUEST_STATUS.CLOSED, REQUEST_STATUS.VOIDED, REQUEST_STATUS.REJECTED] } }),
+      missingExchangeRateDates()
+    ]);
+    const journal = journals[0] || { count: 0, debit: 0, credit: 0 };
+    metrics.push(
+      { key: "period", label: "Current period", value: periodRecord?.status || "NOT_CREATED", format: "text", tone: periodRecord?.status === "OPEN" ? "green" : "amber" },
+      { key: "cxp", label: "Accounts payable", value: cxp, tone: "navy" },
+      { key: "debit", label: "Debit total", value: journal.debit, format: "currency", tone: "teal" },
+      { key: "credit", label: "Credit total", value: journal.credit, format: "currency", tone: "neutral" },
+      { key: "closure", label: "Pending period items", value: pendingClosure, tone: "amber" }
+    );
+    if (missingDates.length) warnings.push({ key: "missingRates", label: "Missing exchange-rate dates", count: missingDates.length, details: missingDates, path: "/exchange-rates", tone: "red" });
   }
 
   if (user.role === ROLES.TREASURY) {
-    const [queue, recentFiles] = await Promise.all([
-      FinancialRequest.find({ status: REQUEST_STATUS.APPROVED_PAYABLE }).populate(populatedRequest).sort({ updatedAt: 1 }),
-      GeneratedFile.find({ kind: "BANK_TXT" }).populate("generatedBy", "name role").sort({ createdAt: -1 }).limit(6)
-    ]);
-    const totals = queue.reduce((result, request) => {
-      result[request.currency] = Number(((result[request.currency] || 0) + Number(request.totalAmount || 0)).toFixed(2));
-      return result;
-    }, {});
-    const missingBank = queue.filter((request) => !request.supplier?.cci && !request.supplier?.bankAccount).length;
+    const queue = await AccountsPayable.find({ status: { $in: [AP_STATUS.OPEN, AP_STATUS.SCHEDULED, AP_STATUS.PAYMENT_FILE_CREATED] } }).populate("supplier").populate("request").sort({ dueDate: 1 });
+    const totals = queue.reduce((result, item) => ({ ...result, [item.currency]: (result[item.currency] || 0) + item.outstandingAmount }), {});
+    const supplierIds = queue.map((item) => item.supplier?._id).filter(Boolean);
+    const validBankSuppliers = new Set((await SupplierBankAccount.find({ supplier: { $in: supplierIds }, active: true }).select("supplier")).map((item) => String(item.supplier)));
+    const missingBank = queue.filter((item) => !validBankSuppliers.has(String(item.supplier?._id))).length;
+    const recentFiles = await PaymentBatch.find().populate("generatedBy", "name role").sort({ generatedAt: -1 }).limit(6);
     metrics.push(
       { key: "queue", label: "Payable queue", value: queue.length, tone: "amber" },
-      { key: "pen", label: "PEN waiting", value: totals.PEN || 0, tone: "teal", format: "currency", currency: "PEN" },
-      { key: "usd", label: "USD waiting", value: totals.USD || 0, tone: "navy", format: "currency", currency: "USD" },
+      { key: "pen", label: "PEN waiting", value: totals.PEN || 0, format: "currency", currency: "PEN", tone: "teal" },
+      { key: "usd", label: "USD waiting", value: totals.USD || 0, format: "currency", currency: "USD", tone: "navy" },
       { key: "missingBank", label: "Missing bank details", value: missingBank, tone: missingBank ? "red" : "green" },
       { key: "files", label: "Recent bank files", value: recentFiles.length, tone: "neutral" }
     );
-    if (missingBank) warnings.push({ key: "missingBank", label: "Payable suppliers missing bank details", count: missingBank, path: "/treasury", tone: "red" });
     data.queue = queue.slice(0, 8);
     data.recentFiles = recentFiles;
   }
 
+  if (user.role === ROLES.BUDGET) {
+    const overview = await budgetOverview({ period });
+    metrics.push(
+      { key: "assigned", label: "Assigned", value: overview.totals.assigned, format: "currency", tone: "navy" },
+      { key: "available", label: "Available", value: overview.totals.available, format: "currency", tone: "green" },
+      { key: "committed", label: "Committed", value: overview.totals.committed, format: "currency", tone: "amber" },
+      { key: "executed", label: "Executed", value: overview.totals.executed, format: "currency", tone: "teal" },
+      { key: "paid", label: "Paid", value: overview.totals.paid, format: "currency", tone: "neutral" }
+    );
+    data.budget = overview;
+  }
   return { metrics, warnings, ...data };
 }
 
-export const getTaskSummary = asyncHandler(async (req, res) => {
-  res.json(await buildTasks(req.user));
-});
+export const getTaskSummary = asyncHandler(async (req, res) => res.json(await buildTasks(req.user)));
 
 export const getDashboardSummary = asyncHandler(async (req, res) => {
   const [common, tasks] = await Promise.all([commonSummary(req.user), buildTasks(req.user)]);
   const details = await roleDetails(req.user, common);
-  res.json({
-    role: req.user.role,
-    total: common.total,
-    byStatus: common.byStatus,
-    byType: common.byType,
-    byCurrency: common.byCurrency,
-    recentRequests: common.recentRequests,
-    tasks,
-    ...details
-  });
+  res.json({ role: req.user.role, ...common, tasks, ...details });
 });

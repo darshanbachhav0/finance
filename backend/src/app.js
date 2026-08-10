@@ -6,6 +6,7 @@ import morgan from "morgan";
 import path from "path";
 import { fileURLToPath } from "url";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
+import { sanitizeInput } from "./middleware/sanitizeInput.js";
 import routes from "./routes/index.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -29,29 +30,29 @@ function isAllowedDevOrigin(origin) {
 
 app.use(
   helmet({
-    crossOriginResourcePolicy: { policy: "cross-origin" }
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    contentSecurityPolicy: {
+      directives: {
+        upgradeInsecureRequests: null
+      }
+    }
   })
 );
-if (!isProduction) {
-  app.use(
-    cors({
-      origin(origin, callback) {
-        if (isAllowedDevOrigin(origin)) {
-          callback(null, true);
-          return;
-        }
-        callback(new Error(`CORS blocked origin: ${origin}`));
-      },
-      credentials: true
-    })
-  );
-}
+app.use(
+  cors({
+    origin(origin, callback) {
+      const allowed = isProduction ? (!origin || allowedOrigins.includes(origin)) : isAllowedDevOrigin(origin);
+      if (allowed) return callback(null, true);
+      return callback(new Error("CORS origin is not allowed."));
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+  })
+);
 app.use(morgan("dev"));
-app.use(express.json({ limit: "5mb" }));
-app.use(express.urlencoded({ extended: true }));
-
-const uploadsPath = path.resolve(__dirname, "..", "uploads");
-app.use("/uploads", express.static(uploadsPath));
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "2mb" }));
+app.use(express.urlencoded({ extended: true, limit: process.env.FORM_BODY_LIMIT || "2mb" }));
+app.use(sanitizeInput);
 
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", service: "erp-financial-backend" });
@@ -69,7 +70,7 @@ if (isProduction) {
 
   app.use(express.static(frontendDist, { index: false, maxAge: "1d" }));
   app.get("*", (req, res, next) => {
-    if (req.path.startsWith("/api/") || req.path.startsWith("/uploads/") || req.path === "/health") {
+    if (req.path.startsWith("/api/") || req.path.startsWith("/uploads/") || req.path.startsWith("/generated/") || req.path === "/health") {
       next();
       return;
     }

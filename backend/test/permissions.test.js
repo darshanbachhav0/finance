@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { REQUEST_STATUS, ROLES } from "../src/utils/constants.js";
-import { canApproveStage, canCreateRequest, canModifyRequest, canViewRequest, canViewSuppliers } from "../src/utils/permissions.js";
-import { APPROVAL_STAGES } from "../src/utils/constants.js";
+import { APPROVAL_STAGES, PERMISSIONS, REQUEST_STATUS, ROLES } from "../src/utils/constants.js";
+import { canApproveStage, canCreateRequest, canModifyRequest, canViewRequest, canViewSuppliers, hasPermission } from "../src/utils/permissions.js";
 
 const solicitor = { _id: "user-1", role: ROLES.SOLICITOR };
 const anotherSolicitor = { _id: "user-2", role: ROLES.SOLICITOR };
@@ -55,4 +54,11 @@ test("Approvers can act only at their assigned workflow level while Admin can ac
   assert.equal(canApproveStage(viceRequest, director), false);
   assert.equal(canApproveStage(viceRequest, vice), true);
   assert.equal(canApproveStage(viceRequest, admin), true);
+});
+
+test("permission catalog preserves existing roles and adds Budget and Management capabilities", () => {
+  assert.equal(hasPermission({ role: ROLES.BUDGET }, PERMISSIONS.BUDGET_MANAGE), true);
+  assert.equal(hasPermission({ role: ROLES.MANAGEMENT }, PERMISSIONS.REPORT_VIEW), true);
+  assert.equal(hasPermission({ role: ROLES.SOLICITOR }, PERMISSIONS.PAYMENT_CONFIRM), false);
+  assert.equal(hasPermission({ role: ROLES.ADMIN }, PERMISSIONS.AUDIT_VIEW), true);
 });

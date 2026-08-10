@@ -1,8 +1,9 @@
 import { Eye, Pencil, Plus, Save, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import api from "../api/client.js";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import { useToast } from "../context/ToastContext.jsx";
+import usePaginatedResource from "../hooks/usePaginatedResource.js";
 import ConfirmDialog from "./ConfirmDialog.jsx";
 import DataTable from "./DataTable.jsx";
 import Drawer from "./Drawer.jsx";
@@ -34,34 +35,19 @@ export default function ResourceManager({
 }) {
   const { t } = useLanguage();
   const { notify } = useToast();
-  const [rows, setRows] = useState([]);
   const [form, setForm] = useState(defaultValue(fields));
   const [editing, setEditing] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [detailRow, setDetailRow] = useState(null);
   const [confirm, setConfirm] = useState(null);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [actionError, setActionError] = useState("");
   const [saving, setSaving] = useState(false);
   const [fieldErrors, setFieldErrors] = useState({});
   const canCreate = allowCreate ?? !readOnly;
   const canEdit = allowEdit ?? !readOnly;
   const canDelete = allowDelete ?? !readOnly;
-
-  async function load() {
-    setLoading(true);
-    try {
-      const response = await api.get(endpoint);
-      setRows(response.data.data);
-      setError("");
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => { load(); }, [endpoint]);
+  const resourceTable = usePaginatedResource(endpoint);
+  const { rows, loading } = resourceTable;
 
   function startCreate(initialValues = {}) {
     setEditing(null);
@@ -106,7 +92,7 @@ export default function ResourceManager({
 
   async function performSubmit() {
     setSaving(true);
-    setError("");
+    setActionError("");
     try {
       const payload = transformSubmit ? transformSubmit(form) : form;
       const multipart = fields.some((field) => field.type === "file");
@@ -120,14 +106,16 @@ export default function ResourceManager({
         });
         config = { headers: { "Content-Type": "multipart/form-data" } };
       }
-      if (editing) await api.put(`${endpoint}/${editing._id}`, requestPayload, config);
-      else await api.post(endpoint, requestPayload, config);
+      const response = editing
+        ? await api.put(`${endpoint}/${editing._id}`, requestPayload, config)
+        : await api.post(endpoint, requestPayload, config);
       notify(editing ? "Record updated." : "Record created.");
+      for (const warning of response.data.warnings || []) notify(`${warning.code}: ${warning.supplierName || "Review the related record."}`, "warning");
       setDrawerOpen(false);
       setConfirm(null);
-      await load();
+      resourceTable.reload();
     } catch (err) {
-      setError(err.details ? `${err.message} ${JSON.stringify(err.details)}` : err.message);
+      setActionError(err.details ? `${err.message} ${JSON.stringify(err.details)}` : err.message);
       notify(err.message, "error");
       setConfirm(null);
     } finally {
@@ -152,9 +140,9 @@ export default function ResourceManager({
       await api.delete(`${endpoint}/${confirm.row._id}`);
       notify(deleteMode === "deactivate" ? "Record deactivated." : "Record permanently deleted.");
       setConfirm(null);
-      await load();
+      resourceTable.reload();
     } catch (err) {
-      setError(err.message);
+      setActionError(err.message);
       notify(err.message, "error");
       setConfirm(null);
     } finally {
@@ -211,9 +199,9 @@ export default function ResourceManager({
           </>
         )}
       />
-      <Message type="error">{error}</Message>
+      <Message type="error">{actionError || resourceTable.error}</Message>
       <div className="workspace-panel">
-        <DataTable rows={rows} columns={normalizedColumns} loading={loading} filters={tableFilters} rowActions={actions} caption={title} />
+        <DataTable rows={rows} columns={normalizedColumns} loading={loading} filters={tableFilters} rowActions={actions} caption={title} remote={resourceTable.remote} />
       </div>
 
       <Drawer
@@ -244,6 +232,18 @@ export default function ResourceManager({
                 </span>
               ) : field.type === "file" ? (
                 <><input type="file" accept={field.accept} multiple={field.multiple} onChange={(event) => setForm({ ...form, [field.name]: Array.from(event.target.files || []) })} /><small className="field-hint">{form[field.name]?.map((file) => file.name).join(", ") || t(field.placeholder || "Choose file")}</small></>
+              ) : field.type === "multiselect" ? (
+                <select multiple value={Array.isArray(form[field.name]) ? form[field.name] : []} onChange={(event) => setForm({ ...form, [field.name]: Array.from(event.target.selectedOptions, (option) => option.value) })}>
+                  {field.options.map((option) => <option key={option.value ?? option} value={option.value ?? option}>{t(option.label ?? option)}</option>)}
+                </select>
+              ) : field.type === "textarea" ? (
+                <textarea
+                  rows={field.rows || 4}
+                  value={form[field.name]}
+                  required={field.required}
+                  placeholder={t(field.placeholder || "")}
+                  onChange={(event) => setForm({ ...form, [field.name]: event.target.value })}
+                />
               ) : (
                 <input
                   type={field.type || "text"}

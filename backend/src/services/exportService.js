@@ -15,13 +15,15 @@ export function flattenConsolidationRow(row, costCenter, expenseType) {
     period: row.period,
     costCenterCode: costCenter?.code || "",
     costCenterName: costCenter?.name || "",
-    expenseAccount: expenseType?.accountNumber || "",
+    expenseAccount: row.accountNumber || expenseType?.accountNumber || "",
     expenseTypeName: expenseType?.name || "",
     currency: row.currency,
     netAmount: row.netAmount,
     igvAmount: row.igvAmount,
     totalAmount: row.totalAmount,
     penEquivalent: row.penEquivalent,
+    debit: row.debit || 0,
+    credit: row.credit || 0,
     requestCount: row.requestCount
   };
 }
@@ -29,12 +31,10 @@ export function flattenConsolidationRow(row, costCenter, expenseType) {
 export async function persistReportFile(fileName, content) {
   await fs.mkdir(reportsDir, { recursive: true });
   await fs.writeFile(path.join(reportsDir, fileName), content, "utf8");
-  return `/uploads/reports/${fileName}`;
+  return `/generated/reports/${fileName}`;
 }
 import fs from "fs/promises";
 import path from "path";
-import { fileURLToPath } from "url";
+import { generatedRoot } from "./storageService.js";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const reportsDir = path.resolve(__dirname, "..", "..", "uploads", "reports");
+const reportsDir = path.join(generatedRoot, "reports");

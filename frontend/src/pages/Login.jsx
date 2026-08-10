@@ -7,18 +7,21 @@ import { useAuth } from "../context/AuthContext.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
 
 const demos = [
-  { role: "Admin", email: "admin@erp.local", password: "Admin123!" },
-  { role: "Solicitor", email: "solicitor@erp.local", password: "User123!" },
-  { role: "Approver", email: "approver@erp.local", password: "Approver123!" },
-  { role: "Accounting", email: "accounting@erp.local", password: "Accounting123!" },
-  { role: "Treasury", email: "treasury@erp.local", password: "Treasury123!" }
+  { key: "admin", role: "Admin", email: "admin@erp.local", password: "Admin12345!" },
+  { key: "solicitor", role: "Solicitor", email: "solicitor@erp.local", password: "User123456!" },
+  { key: "director", role: "Area Director", email: "director@erp.local", password: "Director123!" },
+  { key: "vice", role: "Vice Rector", email: "vicerector@erp.local", password: "ViceRector123!" },
+  { key: "accounting", role: "Accounting", email: "accounting@erp.local", password: "Accounting123!" },
+  { key: "treasury", role: "Treasury", email: "treasury@erp.local", password: "Treasury123!" },
+  { key: "budget", role: "Budget", email: "budget@erp.local", password: "Budget12345!" },
+  { key: "management", role: "Management", email: "management@erp.local", password: "Management123!" }
 ];
 
 export default function Login() {
   const { login, isAuthenticated } = useAuth();
   const { t } = useLanguage();
   const [email, setEmail] = useState(import.meta.env.DEV ? "admin@erp.local" : "");
-  const [password, setPassword] = useState(import.meta.env.DEV ? "Admin123!" : "");
+  const [password, setPassword] = useState(import.meta.env.DEV ? "Admin12345!" : "");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -38,7 +41,7 @@ export default function Login() {
   }
 
   function selectDemo(event) {
-    const account = demos.find((demo) => demo.role === event.target.value);
+    const account = demos.find((demo) => demo.key === event.target.value);
     if (account) {
       setEmail(account.email);
       setPassword(account.password);
@@ -63,7 +66,7 @@ export default function Login() {
           {import.meta.env.DEV && (
             <>
               <div className="login-divider"><span>{t("Local demo access")}</span></div>
-              <label className="field"><span>{t("Choose demo role")}</span><select defaultValue="Admin" onChange={selectDemo}>{demos.map((demo) => <option key={demo.role} value={demo.role}>{t(demo.role)}</option>)}</select></label>
+              <label className="field"><span>{t("Choose demo role")}</span><select defaultValue="admin" onChange={selectDemo}>{demos.map((demo) => <option key={demo.key} value={demo.key}>{t(demo.role)}</option>)}</select></label>
             </>
           )}
         </form>

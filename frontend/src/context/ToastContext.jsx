@@ -1,4 +1,4 @@
-import { AlertCircle, CheckCircle2, Info, X } from "lucide-react";
+import { AlertCircle, AlertTriangle, CheckCircle2, Info, X } from "lucide-react";
 import { createContext, useCallback, useContext, useMemo, useState } from "react";
 import { useLanguage } from "./LanguageContext.jsx";
 
@@ -29,7 +29,7 @@ export function ToastProvider({ children }) {
       {children}
       <div className="toast-region" aria-live="polite" aria-label={t("Notifications")}>
         {toasts.map((toast) => {
-          const Icon = toast.tone === "error" ? AlertCircle : toast.tone === "info" ? Info : CheckCircle2;
+          const Icon = toast.tone === "error" ? AlertCircle : toast.tone === "warning" ? AlertTriangle : toast.tone === "info" ? Info : CheckCircle2;
           return (
             <div className={`toast toast-${toast.tone}${toast.exiting ? " is-exiting" : ""}`} key={toast.id} role={toast.tone === "error" ? "alert" : "status"}>
               <Icon size={19} aria-hidden="true" />

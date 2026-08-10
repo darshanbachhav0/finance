@@ -1,5 +1,6 @@
 import { AlertTriangle, Loader2, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import useAnimatedPresence from "../hooks/useAnimatedPresence.js";
 
@@ -19,7 +20,11 @@ export default function ConfirmDialog({
   onClose
 }) {
   const { t } = useLanguage();
+  const titleId = useId();
+  const descriptionId = useId();
   const [inputValue, setInputValue] = useState("");
+  const dialogRef = useRef(null);
+  const inputRef = useRef(null);
   const confirmRef = useRef(null);
   const onCloseRef = useRef(onClose);
   const previousFocusRef = useRef(null);
@@ -33,12 +38,39 @@ export default function ConfirmDialog({
     : contentRef.current;
 
   useEffect(() => {
-    if (!open) return undefined;
+    if (!open) return;
     previousFocusRef.current = document.activeElement;
     setInputValue("");
-    window.setTimeout(() => confirmRef.current?.focus(), 0);
+    const frame = window.requestAnimationFrame(() => {
+      (content.inputLabel ? inputRef.current : confirmRef.current)?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, content.inputLabel]);
+
+  useEffect(() => {
+    if (!open) return undefined;
     const onKeyDown = (event) => {
-      if (event.key === "Escape" && !loading) onCloseRef.current();
+      if (event.key === "Escape" && !loading) {
+        event.preventDefault();
+        event.stopPropagation();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+
+      const focusable = [...(dialogRef.current?.querySelectorAll(
+        'button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
+      ) || [])].filter((element) => !element.hidden && element.getAttribute("aria-hidden") !== "true");
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
@@ -52,14 +84,14 @@ export default function ConfirmDialog({
 
   const disabled = loading || (content.inputRequired && !inputValue.trim());
 
-  return (
+  return createPortal(
     <div className={`modal-backdrop motion-${phase}`} role="presentation" onMouseDown={(event) => event.target === event.currentTarget && open && !loading && onClose()}>
-      <section className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-description">
+      <section ref={dialogRef} className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={content.description ? descriptionId : undefined}>
         <header className="dialog-header">
           <div className={`dialog-icon tone-${content.tone}`}><AlertTriangle size={20} /></div>
           <div>
-            <h2 id="confirm-title">{t(content.title)}</h2>
-            {content.description && <p id="confirm-description">{t(content.description)}</p>}
+            <h2 id={titleId}>{t(content.title)}</h2>
+            {content.description && <p id={descriptionId}>{t(content.description)}</p>}
           </div>
           <button type="button" className="icon-button quiet dialog-close" onClick={onClose} disabled={loading} aria-label={t("Close dialog")}>
             <X size={18} />
@@ -79,6 +111,7 @@ export default function ConfirmDialog({
           <label className="field">
             <span>{t(content.inputLabel)}{content.inputRequired ? " *" : ""}</span>
             <textarea
+              ref={inputRef}
               rows="3"
               value={inputValue}
               placeholder={t(content.inputPlaceholder || "Add comments")}
@@ -102,6 +135,7 @@ export default function ConfirmDialog({
           </button>
         </footer>
       </section>
-    </div>
+    </div>,
+    document.body
   );
 }

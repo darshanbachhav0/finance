@@ -1,10 +1,12 @@
 import ResourceManager from "../components/ResourceManager.jsx";
+import ProtectedAssetButton from "../components/ProtectedAssetButton.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
-import { apiAssetUrl } from "../api/client.js";
+import { useLanguage } from "../context/LanguageContext.jsx";
 import { Download } from "lucide-react";
 
 export default function Suppliers() {
   const { user } = useAuth();
+  const { t } = useLanguage();
   const canHomologate = ["Admin", "Accounting"].includes(user.role);
 
   return (
@@ -17,7 +19,7 @@ export default function Suppliers() {
       allowEdit={canHomologate}
       allowDelete={canHomologate}
       deleteMode="deactivate"
-      duplicateFields={["rucDni", "bankAccount", "cci"]}
+      duplicateFields={["rucDni"]}
       detailsTitle="Supplier bank history"
       renderDetails={(supplier) => (
         <div className="detail-stack">
@@ -31,14 +33,14 @@ export default function Suppliers() {
             <div><dt>Taxpayer status</dt><dd>{supplier.compliance?.taxpayerActive ? "ACTIVE" : "PENDING"}</dd></div>
             <div><dt>Compliance</dt><dd>{supplier.compliance?.compliant ? "COMPLIANT" : "PENDING"}</dd></div>
           </dl>
-          <div><h3>Homologation documents</h3><div className="attachment-list">{(supplier.documents || []).map((item) => <a key={item._id} href={apiAssetUrl(item.url)} target="_blank" rel="noreferrer"><Download size={15} /><span>{item.kind}: {item.originalName}</span></a>)}{!supplier.documents?.length && <p>No homologation documents uploaded.</p>}</div></div>
+          <div><h3>{t("Homologation documents")}</h3><div className="attachment-list">{(supplier.documents || []).map((item) => <ProtectedAssetButton key={item._id} resourcePath={item.url} fileName={item.originalName} preview><Download size={15} /><span>{t(item.kind)}: {item.originalName}</span></ProtectedAssetButton>)}{!supplier.documents?.length && <p>{t("No homologation documents uploaded.")}</p>}</div></div>
           <div>
             <h3>Bank change history</h3>
             <div className="history-list">
-              {[...(supplier.bankHistory || [])].reverse().map((item, index) => (
+              {[...(supplier.bankAccounts || supplier.bankHistory || [])].reverse().map((item, index) => (
                 <div className="history-row" key={`${item.changedAt}-${index}`}>
-                  <div><strong>{item.bankName || "Bank not recorded"}</strong><span>{item.cci || item.bankAccount || "No account"}</span></div>
-                  <div><span className={`badge ${item.status === "ACTIVE" ? "badge-green" : "badge-gray"}`}>{item.status}</span><small>{item.changedAt ? new Date(item.changedAt).toLocaleString() : ""}</small></div>
+                  <div><strong>{item.bank || item.bankName || "Bank not recorded"} - {item.currency || "PEN"}</strong><span>{item.cci || item.accountNumber || item.bankAccount || "No account"}</span></div>
+                  <div><span className={`badge ${item.active || item.status === "ACTIVE" ? "badge-green" : "badge-gray"}`}>{item.active || item.status === "ACTIVE" ? "ACTIVE" : "INACTIVE"}</span><small>{item.validFrom || item.changedAt ? new Date(item.validFrom || item.changedAt).toLocaleString() : ""}</small></div>
                 </div>
               ))}
               {!supplier.bankHistory?.length && <p>No bank changes recorded.</p>}
@@ -65,7 +67,7 @@ export default function Suppliers() {
           { name: "taxpayerActive", label: "Active taxpayer", type: "checkbox", getValue: (row) => row.compliance?.taxpayerActive },
           { name: "compliant", label: "Compliance approved", type: "checkbox", getValue: (row) => row.compliance?.compliant },
           { name: "complianceComments", label: "Compliance comments", getValue: (row) => row.compliance?.comments },
-          { name: "status", label: "Homologation status", type: "select", defaultValue: "PENDING_VALIDATION", options: ["PENDING_VALIDATION", "ACTIVE", "OBSERVED", "INACTIVE"] }
+          { name: "homologationStatus", label: "Homologation status", type: "select", defaultValue: "PENDING_VALIDATION", options: ["PENDING_VALIDATION", "HOMOLOGATED", "OBSERVED", "INACTIVE"] }
         ] : [])
       ]}
       columns={[
@@ -74,7 +76,7 @@ export default function Suppliers() {
         { key: "bankName", label: "Bank" },
         { key: "supplierType", label: "Type" },
         { key: "cci", label: "CCI" },
-        { key: "status", label: "Status" }
+        { key: "homologationStatus", label: "Status" }
       ]}
     />
   );

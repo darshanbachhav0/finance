@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
-    "test": "node test/menuNavigation.test.js",
+    "test": "node test/run.js",
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {

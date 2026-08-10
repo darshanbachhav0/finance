@@ -2,3 +2,5 @@ import "./permissions.test.js";
 import "./requestRules.test.js";
 import "./exchangeRateProvider.test.js";
 import "./workflowIntegration.test.js";
+import "./domainFoundation.test.js";
+import "./financialLifecycle.test.js";

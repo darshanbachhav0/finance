@@ -1,36 +1,37 @@
+import crypto from "crypto";
 import fs from "fs";
 import multer from "multer";
 import path from "path";
-import { fileURLToPath } from "url";
 import { AppError } from "../utils/AppError.js";
+import { ERROR_CODES } from "../utils/constants.js";
+import { tempUploadDir } from "../services/storageService.js";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const uploadRoot = path.resolve(__dirname, "..", "..", "uploads");
-
-fs.mkdirSync(uploadRoot, { recursive: true });
+fs.mkdirSync(tempUploadDir, { recursive: true });
 
 const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => {
-    fs.mkdirSync(uploadRoot, { recursive: true });
-    cb(null, uploadRoot);
-  },
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    const base = path
-      .basename(file.originalname, ext)
-      .replace(/[^a-zA-Z0-9-_]/g, "-")
-      .slice(0, 60);
-    cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}-${base}${ext}`);
-  }
+  destination: (_req, _file, cb) => cb(null, tempUploadDir),
+  filename: (_req, file, cb) => cb(null, `${crypto.randomUUID()}${path.extname(file.originalname).toLowerCase()}`)
 });
 
-const allowed = new Set([".xml", ".pdf", ".txt", ".csv", ".json", ".jpg", ".jpeg", ".png", ".doc", ".docx", ".xlsx"]);
+const allowedMimeByExtension = new Map([
+  [".xml", new Set(["application/xml", "text/xml", "text/plain", "application/octet-stream"])],
+  [".pdf", new Set(["application/pdf", "application/octet-stream"])],
+  [".txt", new Set(["text/plain", "application/octet-stream"])],
+  [".csv", new Set(["text/csv", "application/vnd.ms-excel", "text/plain", "application/octet-stream"])],
+  [".json", new Set(["application/json", "text/plain", "application/octet-stream"])],
+  [".jpg", new Set(["image/jpeg"])],
+  [".jpeg", new Set(["image/jpeg"])],
+  [".png", new Set(["image/png"])],
+  [".doc", new Set(["application/msword", "application/octet-stream"])],
+  [".docx", new Set(["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/zip", "application/octet-stream"])],
+  [".xlsx", new Set(["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/zip", "application/octet-stream"])]
+]);
 
 function fileFilter(_req, file, cb) {
-  const ext = path.extname(file.originalname).toLowerCase();
-  if (!allowed.has(ext)) {
-    cb(new AppError(400, `File type ${ext || "unknown"} is not allowed.`));
+  const extension = path.extname(file.originalname).toLowerCase();
+  const allowedMimes = allowedMimeByExtension.get(extension);
+  if (!allowedMimes || !allowedMimes.has(String(file.mimetype || "").toLowerCase())) {
+    cb(new AppError(400, "The uploaded file type is not allowed.", { extension, mime: file.mimetype }, ERROR_CODES.VALIDATION_ERROR));
     return;
   }
   cb(null, true);
@@ -39,7 +40,7 @@ function fileFilter(_req, file, cb) {
 export const uploadFields = multer({
   storage,
   fileFilter,
-  limits: { fileSize: 10 * 1024 * 1024 }
+  limits: { fileSize: 10 * 1024 * 1024, files: 30, fields: 100, parts: 140 }
 }).fields([
   { name: "xml", maxCount: 1 },
   { name: "pdf", maxCount: 1 },
@@ -49,7 +50,8 @@ export const uploadFields = multer({
   { name: "conformity", maxCount: 3 },
   { name: "activityReport", maxCount: 3 },
   { name: "supporting", maxCount: 8 },
-  { name: "rendition", maxCount: 8 },
+  { name: "rendition", maxCount: 12 },
+  { name: "returnReceipt", maxCount: 3 },
   { name: "rucFile", maxCount: 1 },
   { name: "bankCertificate", maxCount: 1 },
   { name: "legalRepId", maxCount: 1 }

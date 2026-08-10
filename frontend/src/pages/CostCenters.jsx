@@ -2,8 +2,7 @@ import ResourceManager from "../components/ResourceManager.jsx";
 
 const numberPayload = (form) => ({
   ...form,
-  annualBudget: Number(form.annualBudget || 0),
-  executedAmount: Number(form.executedAmount || 0)
+  annualBudget: Number(form.annualBudget || 0)
 });
 
 export default function CostCenters() {
@@ -19,7 +18,6 @@ export default function CostCenters() {
         { name: "name", label: "Name", required: true },
         { name: "area", label: "Area", required: true },
         { name: "annualBudget", label: "Annual assigned budget", type: "number", step: "0.01", defaultValue: 0 },
-        { name: "executedAmount", label: "Executed amount", type: "number", step: "0.01", defaultValue: 0 },
         { name: "budgetMode", label: "Budget mode", type: "select", defaultValue: "TRANSITIONAL", options: ["TRANSITIONAL", "ACTIVE"] },
         { name: "active", label: "Active", type: "checkbox", defaultValue: true }
       ]}

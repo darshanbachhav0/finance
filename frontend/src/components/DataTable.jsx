@@ -42,7 +42,8 @@ export default function DataTable({
   onRowClick,
   toolbarActions,
   emptyDescription = "Adjust filters or create a new record.",
-  caption
+  caption,
+  remote
 }) {
   const { t } = useLanguage();
   const [search, setSearch] = useState("");
@@ -51,11 +52,20 @@ export default function DataTable({
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(initialPageSize);
 
-  useEffect(() => setPage(1), [search, filterValues, pageSize, rows.length]);
+  const isRemote = Boolean(remote?.onQueryChange);
+  const activeSearch = isRemote ? remote.query?.search || "" : search;
+  const activeFilters = isRemote ? remote.query?.filters || {} : filterValues;
+  const activeSort = isRemote ? remote.query?.sort || null : sort;
+  const activePageSize = isRemote ? remote.query?.pageSize || remote.pagination?.pageSize || initialPageSize : pageSize;
+
+  useEffect(() => {
+    if (!isRemote) setPage(1);
+  }, [search, filterValues, pageSize, rows.length, isRemote]);
 
   const processed = useMemo(() => {
+    if (isRemote) return rows;
     let next = [...rows];
-    const needle = search.trim().toLowerCase();
+    const needle = activeSearch.trim().toLowerCase();
     if (needle) {
       next = next.filter((row) => columns.some((column) => {
         if (column.searchable === false || column.key === "actions") return false;
@@ -64,35 +74,46 @@ export default function DataTable({
       }));
     }
     for (const filter of filters) {
-      const selected = filterValues[filter.key];
+      const selected = activeFilters[filter.key];
       if (selected === undefined || selected === "") continue;
       next = next.filter((row) => {
         const value = filter.getValue ? filter.getValue(row) : row[filter.key];
         return String(value) === String(selected);
       });
     }
-    if (sort) {
-      const column = columns.find((item) => item.key === sort.key);
-      next.sort((left, right) => compare(rawValue(column, left), rawValue(column, right)) * (sort.direction === "asc" ? 1 : -1));
+    if (activeSort) {
+      const column = columns.find((item) => (item.sortKey || item.key) === activeSort.key);
+      next.sort((left, right) => compare(rawValue(column, left), rawValue(column, right)) * (activeSort.direction === "asc" ? 1 : -1));
     }
     return next;
-  }, [rows, columns, search, filters, filterValues, sort]);
+  }, [rows, columns, activeSearch, filters, activeFilters, activeSort, isRemote]);
 
-  const pageCount = Math.max(1, Math.ceil(processed.length / pageSize));
-  const safePage = Math.min(page, pageCount);
-  const visibleRows = processed.slice((safePage - 1) * pageSize, safePage * pageSize);
+  const pageCount = isRemote
+    ? Math.max(1, remote.pagination?.totalPages || 1)
+    : Math.max(1, Math.ceil(processed.length / activePageSize));
+  const currentPage = isRemote ? remote.pagination?.page || remote.query?.page || 1 : page;
+  const safePage = Math.min(currentPage, pageCount);
+  const visibleRows = isRemote ? processed : processed.slice((safePage - 1) * activePageSize, safePage * activePageSize);
   const selectedIds = selection?.selected || [];
   const selectableVisible = visibleRows.filter((row) => !selection?.isRowSelectable || selection.isRowSelectable(row));
   const allVisibleSelected = selectableVisible.length > 0 && selectableVisible.every((row) => selectedIds.includes(row[rowKey]));
-  const hasFilters = Boolean(search) || Object.values(filterValues).some(Boolean);
+  const hasFilters = Boolean(activeSearch) || Object.values(activeFilters).some(Boolean);
+
+  function updateRemote(patch) {
+    remote.onQueryChange({ ...remote.query, ...patch });
+  }
 
   function toggleSort(column) {
     if (column.sortable === false || column.key === "actions") return;
-    setSort((current) => {
-      if (!current || current.key !== column.key) return { key: column.key, direction: "asc" };
-      if (current.direction === "asc") return { key: column.key, direction: "desc" };
-      return null;
-    });
+    const key = column.sortKey || column.key;
+    const current = activeSort;
+    const next = !current || current.key !== key
+      ? { key, direction: "asc" }
+      : current.direction === "asc"
+        ? { key, direction: "desc" }
+        : null;
+    if (isRemote) updateRemote({ sort: next, page: 1 });
+    else setSort(next);
   }
 
   function toggleAllVisible() {
@@ -104,9 +125,12 @@ export default function DataTable({
   }
 
   function clearFilters() {
-    setSearch("");
-    setFilterValues({});
-    setSort(null);
+    if (isRemote) updateRemote({ search: "", filters: {}, sort: null, page: 1 });
+    else {
+      setSearch("");
+      setFilterValues({});
+      setSort(null);
+    }
   }
 
   return (
@@ -117,12 +141,12 @@ export default function DataTable({
             <label className="table-search">
               <Search size={16} aria-hidden="true" />
               <span className="sr-only">{t("Search")}</span>
-              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t(searchPlaceholder)} />
+              <input value={activeSearch} onChange={(event) => isRemote ? updateRemote({ search: event.target.value, page: 1 }) : setSearch(event.target.value)} placeholder={t(searchPlaceholder)} />
             </label>
             {filters.map((filter) => (
               <label className="compact-field" key={filter.key}>
                 <span className="sr-only">{t(filter.label)}</span>
-                <select value={filterValues[filter.key] || ""} onChange={(event) => setFilterValues((current) => ({ ...current, [filter.key]: event.target.value }))}>
+                <select value={activeFilters[filter.key] || ""} onChange={(event) => isRemote ? updateRemote({ filters: { ...activeFilters, [filter.key]: event.target.value }, page: 1 }) : setFilterValues((current) => ({ ...current, [filter.key]: event.target.value }))}>
                   <option value="">{t(filter.allLabel || `All ${filter.label.toLowerCase()}`)}</option>
                   {filter.options.map((option) => (
                     <option key={option.value ?? option} value={option.value ?? option}>{t(option.label ?? option)}</option>
@@ -143,7 +167,7 @@ export default function DataTable({
 
       {showResultCount && (
         <div className="table-result-bar">
-          <span>{loading ? t("Loading records...") : t("Showing {shown} of {total} results").replace("{shown}", processed.length).replace("{total}", rows.length)}</span>
+          <span>{loading ? t("Loading records...") : t("Showing {shown} of {total} results").replace("{shown}", processed.length).replace("{total}", isRemote ? remote.pagination?.total || 0 : rows.length)}</span>
           {selection && selectedIds.length > 0 && <strong>{t("{count} selected").replace("{count}", selectedIds.length)}</strong>}
         </div>
       )}
@@ -159,8 +183,8 @@ export default function DataTable({
                 </th>
               )}
               {columns.map((column) => {
-                const sorted = sort?.key === column.key;
-                const SortIcon = !sorted ? ChevronsUpDown : sort.direction === "asc" ? ArrowUp : ArrowDown;
+                const sorted = activeSort?.key === (column.sortKey || column.key);
+                const SortIcon = !sorted ? ChevronsUpDown : activeSort.direction === "asc" ? ArrowUp : ArrowDown;
                 return (
                   <th key={column.key} className={column.align ? `align-${column.align}` : ""} style={column.width ? { width: column.width } : undefined}>
                     {column.sortable === false || column.key === "actions" ? t(column.label) : (
@@ -176,7 +200,7 @@ export default function DataTable({
             </tr>
           </thead>
           <tbody>
-            {loading ? Array.from({ length: Math.min(pageSize, 6) }).map((_, rowIndex) => (
+            {loading ? Array.from({ length: Math.min(activePageSize, 6) }).map((_, rowIndex) => (
               <tr key={`loading-${rowIndex}`}>
                 {selection && <td><span className="skeleton skeleton-check" /></td>}
                 {columns.map((column) => <td key={column.key}><span className="skeleton skeleton-line" /></td>)}
@@ -214,18 +238,18 @@ export default function DataTable({
         {!loading && !visibleRows.length && <EmptyState description={hasFilters ? "No records match the current filters." : emptyDescription} />}
       </div>
 
-      {controls && processed.length > 0 && (
+      {controls && (processed.length > 0 || (isRemote && (remote.pagination?.total || 0) > 0)) && (
         <div className="table-pagination">
           <label className="page-size">
             <span>{t("Rows per page")}</span>
-            <select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}>
+            <select value={activePageSize} onChange={(event) => isRemote ? updateRemote({ pageSize: Number(event.target.value), page: 1 }) : setPageSize(Number(event.target.value))}>
               {[10, 25, 50].map((size) => <option key={size} value={size}>{size}</option>)}
             </select>
           </label>
           <span>{t("Page {page} of {pages}").replace("{page}", safePage).replace("{pages}", pageCount)}</span>
           <div className="pagination-buttons">
-            <button type="button" className="icon-button" disabled={safePage <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))} aria-label={t("Previous page")}><ChevronLeft size={17} /></button>
-            <button type="button" className="icon-button" disabled={safePage >= pageCount} onClick={() => setPage((current) => Math.min(pageCount, current + 1))} aria-label={t("Next page")}><ChevronRight size={17} /></button>
+            <button type="button" className="icon-button" disabled={safePage <= 1} onClick={() => isRemote ? updateRemote({ page: Math.max(1, safePage - 1) }) : setPage((current) => Math.max(1, current - 1))} aria-label={t("Previous page")}><ChevronLeft size={17} /></button>
+            <button type="button" className="icon-button" disabled={safePage >= pageCount} onClick={() => isRemote ? updateRemote({ page: Math.min(pageCount, safePage + 1) }) : setPage((current) => Math.min(pageCount, current + 1))} aria-label={t("Next page")}><ChevronRight size={17} /></button>
           </div>
         </div>
       )}

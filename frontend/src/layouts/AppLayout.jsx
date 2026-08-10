@@ -1,6 +1,7 @@
 import {
   BarChart3,
   Bell,
+  BookOpenCheck,
   Building2,
   CalendarRange,
   ChartNoAxesCombined,
@@ -14,7 +15,9 @@ import {
   LogOut,
   Menu,
   ReceiptText,
+  ScrollText,
   Settings2,
+  SlidersHorizontal,
   Users,
   WalletCards,
   X
@@ -26,6 +29,7 @@ import LanguageToggle from "../components/LanguageToggle.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import useAnimatedPresence from "../hooks/useAnimatedPresence.js";
+import { canAccessNavigation } from "../utils/navigationAccess.js";
 
 const groups = [
   {
@@ -36,32 +40,37 @@ const groups = [
     label: "Operations",
     items: [
       { label: "Requests", path: "/requests", icon: ReceiptText },
-      { label: "Approval Inbox", path: "/approvals", icon: ClipboardCheck, roles: ["Admin", "Approver"], counter: "approval" }
+      { label: "Approval Inbox", path: "/approvals", icon: ClipboardCheck, counter: "approval" }
     ]
   },
   {
     label: "Finance",
     items: [
-      { label: "Accounting Entries", path: "/accounting", icon: FileSpreadsheet, roles: ["Admin", "Accounting"], counter: "accounting" },
-      { label: "Treasury", path: "/treasury", icon: Landmark, roles: ["Admin", "Treasury"], counter: "payable" },
-      { label: "Budget Control", path: "/budget", icon: WalletCards, roles: ["Admin", "Approver", "Accounting"] },
-      { label: "Accounting Periods", path: "/accounting/periods", icon: CalendarRange, roles: ["Admin", "Accounting"] },
-      { label: "SIRE Export", path: "/accounting/sire", icon: FileSpreadsheet, roles: ["Admin", "Accounting"] },
-      { label: "Management Reports", path: "/reports", icon: ChartNoAxesCombined, roles: ["Admin", "Approver", "Accounting", "Treasury"] }
+      { label: "Accounting Entries", path: "/accounting", icon: FileSpreadsheet, counter: "accounting" },
+      { label: "Accounts Payable", path: "/accounting/payables", icon: BookOpenCheck },
+      { label: "Treasury", path: "/treasury", icon: Landmark, counter: "payable" },
+      { label: "Budget Control", path: "/budget", icon: WalletCards, counter: "budgetExceptions" },
+      { label: "Accounting Periods", path: "/accounting/periods", icon: CalendarRange },
+      { label: "SIRE Export", path: "/accounting/sire", icon: FileSpreadsheet },
+      { label: "Management Reports", path: "/reports", icon: ChartNoAxesCombined }
     ]
   },
   {
     label: "Master Data",
     items: [
-      { label: "Suppliers", path: "/suppliers", icon: Building2, roles: ["Admin", "Accounting", "Treasury", "Solicitor"], counter: "suppliers" },
-      { label: "Cost Centers", path: "/cost-centers", icon: CircleDollarSign, roles: ["Admin", "Accounting"] },
-      { label: "Expense Types", path: "/expense-types", icon: Settings2, roles: ["Admin", "Accounting"] },
-      { label: "Exchange Rates", path: "/exchange-rates", icon: CircleDollarSign, roles: ["Admin", "Accounting"] }
+      { label: "Suppliers", path: "/suppliers", icon: Building2, counter: "suppliers" },
+      { label: "Cost Centers", path: "/cost-centers", icon: CircleDollarSign },
+      { label: "Expense Types", path: "/expense-types", icon: Settings2 },
+      { label: "Exchange Rates", path: "/exchange-rates", icon: CircleDollarSign },
+      { label: "Configuration", path: "/configuration/projects", icon: SlidersHorizontal }
     ]
   },
   {
     label: "Administration",
-    items: [{ label: "Users", path: "/users", icon: Users, roles: ["Admin"] }]
+    items: [
+      { label: "Users", path: "/users", icon: Users },
+      { label: "Audit Viewer", path: "/audit", icon: ScrollText }
+    ]
   }
 ];
 
@@ -76,13 +85,16 @@ const routeTitles = [
   [/^\/budget/, "Budget Control"],
   [/^\/reports/, "Management Reports"],
   [/^\/accounting\/periods/, "Accounting Periods"],
+  [/^\/accounting\/payables/, "Accounts Payable"],
   [/^\/accounting\/sire/, "SIRE RCE Export"],
   [/^\/accounting/, "Accounting Entries"],
   [/^\/suppliers/, "Suppliers"],
   [/^\/cost-centers/, "Cost Centers"],
   [/^\/expense-types/, "Expense Types"],
   [/^\/exchange-rates/, "Exchange Rates"],
-  [/^\/users/, "Users"]
+  [/^\/users/, "Users"],
+  [/^\/configuration/, "Configuration"],
+  [/^\/audit/, "Audit Viewer"]
 ];
 
 export default function AppLayout() {
@@ -92,6 +104,7 @@ export default function AppLayout() {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem("erp_sidebar_collapsed") === "true");
   const [mobileOpen, setMobileOpen] = useState(false);
   const [tasks, setTasks] = useState({ items: [], total: 0, counters: {} });
+  const [notifications, setNotifications] = useState({ data: [], unreadCount: 0 });
   const [taskOpen, setTaskOpen] = useState(false);
   const [userOpen, setUserOpen] = useState(false);
   const menusRef = useRef(null);
@@ -99,14 +112,32 @@ export default function AppLayout() {
 
   const visibleGroups = useMemo(() => groups.map((group) => ({
     ...group,
-    items: group.items.filter((item) => !item.roles || item.roles.includes(user.role))
+    items: group.items.filter((item) => canAccessNavigation(user.role, item.path))
   })).filter((group) => group.items.length), [user.role]);
 
   const pageTitle = routeTitles.find(([pattern]) => pattern.test(location.pathname))?.[1] || "Financial Control";
   const breadcrumb = location.pathname === "/" ? [] : [{ label: "Dashboard", path: "/" }, { label: pageTitle }];
 
   function loadTasks() {
-    api.get("/dashboard/tasks").then((response) => setTasks(response.data)).catch(() => setTasks({ items: [], total: 0, counters: {} }));
+    Promise.all([api.get("/dashboard/tasks"), api.get("/notifications", { params: { limit: 20 } })])
+      .then(([taskResponse, notificationResponse]) => {
+        setTasks(taskResponse.data);
+        setNotifications(notificationResponse.data);
+      })
+      .catch(() => {
+        setTasks({ items: [], total: 0, counters: {} });
+        setNotifications({ data: [], unreadCount: 0 });
+      });
+  }
+
+  async function markNotificationRead(item) {
+    if (!item.readAt) await api.patch(`/notifications/${item._id}/read`).catch(() => undefined);
+    setNotifications((current) => ({ ...current, data: current.data.map((value) => value._id === item._id ? { ...value, readAt: new Date().toISOString() } : value), unreadCount: Math.max(0, current.unreadCount - (item.readAt ? 0 : 1)) }));
+  }
+
+  async function markAllRead() {
+    await api.patch("/notifications/read-all");
+    setNotifications((current) => ({ ...current, unreadCount: 0, data: current.data.map((item) => ({ ...item, readAt: item.readAt || new Date().toISOString() })) }));
   }
 
   useEffect(() => {
@@ -158,7 +189,7 @@ export default function AppLayout() {
                   <NavLink
                     key={item.path}
                     to={item.path}
-                    end={item.path === "/"}
+                    end={item.path === "/" || item.path === "/accounting"}
                     className="nav-item"
                     data-tooltip={t(item.label)}
                     aria-label={t(item.label)}
@@ -198,13 +229,13 @@ export default function AppLayout() {
             <div className="topbar-menu">
               <button type="button" className="icon-button notification-button" onClick={() => { setTaskOpen((current) => !current); setUserOpen(false); }} aria-label={t("Open task notifications")} aria-expanded={taskOpen}>
                 <Bell size={19} />
-                {tasks.total > 0 && <span className="notification-dot">{tasks.total > 99 ? "99+" : tasks.total}</span>}
+                {tasks.total + notifications.unreadCount > 0 && <span className="notification-dot">{tasks.total + notifications.unreadCount > 99 ? "99+" : tasks.total + notifications.unreadCount}</span>}
               </button>
               {taskOpen && (
                 <div className="topbar-popover task-popover">
                   <div className="popover-heading">
                     <strong>{t("Tasks and alerts")}</strong>
-                    <span>{tasks.total}</span>
+                    <span>{tasks.total + notifications.unreadCount}</span>
                   </div>
                   <div className="task-list">
                     {tasks.items.filter((item) => item.count > 0).map((item) => (
@@ -215,6 +246,13 @@ export default function AppLayout() {
                       </Link>
                     ))}
                     {!tasks.items.some((item) => item.count > 0) && <p className="popover-empty">{t("No pending tasks.")}</p>}
+                    {notifications.data.length > 0 && <div className="notification-list-heading"><strong>{t("Notifications")}</strong>{notifications.unreadCount > 0 && <button type="button" className="text-button" onClick={markAllRead}>{t("Mark all read")}</button>}</div>}
+                    {notifications.data.map((item) => (
+                      <Link key={item._id} to={item.path || "/"} className={`task-item notification-item${item.readAt ? " is-read" : ""}`} onClick={() => markNotificationRead(item)}>
+                        <span className={`task-indicator tone-${item.readAt ? "neutral" : "teal"}`} />
+                        <span><strong>{t(item.title)}</strong><small>{t(item.message)}</small></span>
+                      </Link>
+                    ))}
                   </div>
                 </div>
               )}

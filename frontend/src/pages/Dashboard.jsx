@@ -1,12 +1,13 @@
 import { AlertTriangle, CalendarClock, CircleDollarSign, FileText, RefreshCw, Users } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import api, { apiAssetUrl } from "../api/client.js";
+import api from "../api/client.js";
 import DataTable from "../components/DataTable.jsx";
 import Message from "../components/Message.jsx";
 import PageHeader from "../components/PageHeader.jsx";
 import StatCard from "../components/StatCard.jsx";
 import StatusBadge from "../components/StatusBadge.jsx";
+import ProtectedAssetButton from "../components/ProtectedAssetButton.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
 
 const descriptions = {
@@ -14,7 +15,9 @@ const descriptions = {
   Solicitor: "Your drafts, approvals, rejected work, renditions, and recent requests.",
   Approver: "Approval workload, waiting value, oldest requests, and recent decisions.",
   Accounting: "Period readiness, accounting entries, exchange rates, and pending closures.",
-  Treasury: "Payable workload, currency totals, bank readiness, and generated files."
+  Treasury: "Payable workload, currency totals, bank readiness, and generated files.",
+  Budget: "Assigned, available, committed, executed, and paid budget with low-balance controls.",
+  Management: "Institutional CAPEX/OPEX, budget availability, spending, and pending commitments."
 };
 
 const metricIcons = {
@@ -65,6 +68,7 @@ export default function Dashboard() {
     { key: "totalAmount", label: "Amount", render: (row) => `${row.currency} ${Number(row.totalAmount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}` },
     { key: "status", label: "Status", render: (row) => <StatusBadge status={row.status} /> }
   ];
+  const operationalRows = summary?.oldestRequests || summary?.queue?.map((item) => item.request ? ({ ...item.request, supplier: item.supplier, totalAmount: item.outstandingAmount, currency: item.currency, status: item.status }) : item) || summary?.recentRequests || [];
 
   return (
     <section>
@@ -104,7 +108,7 @@ export default function Dashboard() {
                 <div><h3>{t(summary.role === "Approver" ? "Oldest requests awaiting decision" : summary.role === "Treasury" ? "Next payable requests" : "Recent requests")}</h3><p>{t("Current operational work in priority order.")}</p></div>
                 <Link className="text-link" to={summary.role === "Approver" ? "/approvals" : summary.role === "Treasury" ? "/treasury" : "/requests"}>{t("View all")}</Link>
               </div>
-              <DataTable className="dashboard-request-table" controls={false} rows={summary.oldestRequests || summary.queue || summary.recentRequests || []} columns={requestColumns} emptyDescription="No current requests." />
+              <DataTable className="dashboard-request-table" controls={false} rows={operationalRows} columns={requestColumns} emptyDescription="No current requests." />
             </div>
 
             <div className="workspace-panel dashboard-secondary">
@@ -146,7 +150,7 @@ export default function Dashboard() {
               <div className="workspace-panel dashboard-primary">
                 <div className="section-heading"><div><h3>{t("Recent generated files")}</h3><p>{t("Bank and accounting exports created by the team.")}</p></div></div>
                 <DataTable controls={false} rows={summary.recentFiles} columns={[
-                  { key: "fileName", label: "File", render: (row) => <a href={apiAssetUrl(row.url)} target="_blank" rel="noreferrer">{row.fileName}</a> },
+                  { key: "fileName", label: "File", render: (row) => <ProtectedAssetButton resourcePath={row.url} fileName={row.fileName}>{row.fileName}</ProtectedAssetButton> },
                   { key: "kind", label: "Type" },
                   { key: "rowCount", label: "Rows" },
                   { key: "createdAt", label: "Generated", render: (row) => new Date(row.createdAt).toLocaleString() },

@@ -22,7 +22,7 @@ export default function RequestQuickView({ requestId, onClose }) {
     api.get(`/requests/${requestId}`).then((response) => setRequest(response.data.data)).catch((err) => setError(err.message));
   }, [requestId]);
 
-  const editable = request && ["BORRADOR", "RECHAZADO"].includes(request.status) && (user.role === "Admin" || request.solicitor?._id === user._id);
+  const editable = request && ["BORRADOR", "RECHAZADO", "OBSERVADO", "DEVUELTO"].includes(request.status) && (user.role === "Admin" || (request.requester?._id || request.solicitor?._id) === user._id);
 
   return (
     <Drawer
@@ -50,7 +50,7 @@ export default function RequestQuickView({ requestId, onClose }) {
           </div>
           <div className="quick-facts">
             <div><Calendar size={17} /><span>{t("Period")}</span><strong>{request.accountingPeriod}</strong></div>
-            <div><CircleDollarSign size={17} /><span>{t("PEN equivalent")}</span><strong>{Number(request.penEquivalent || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong></div>
+            <div><CircleDollarSign size={17} /><span>{t("PEN equivalent")}</span><strong>{Number(request.totalPENEquivalent ?? request.penEquivalent ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong></div>
           </div>
           <div className="detail-section">
             <h3>{t("Description")}</h3>
