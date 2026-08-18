@@ -11,7 +11,7 @@ services:
     routes:
       - type: rewrite
         source: /*
-        destination: https://consensus-lighter-jets-institutions.trycloudflare.com/*
+        destination: https://tide-spine-glossary-removing.trycloudflare.com/*
     headers:
       - path: /*
         name: X-Content-Type-Options
