@@ -11,27 +11,76 @@ $tempDirectory = Join-Path $projectRoot ".tmp"
 $stateFile = Join-Path $tempDirectory "cloudflare-share.json"
 $localUrl = "http://localhost:5174"
 
+function Get-FrontendAssetPaths {
+  $indexFile = Join-Path $projectRoot "frontend\dist\index.html"
+  if (-not (Test-Path -LiteralPath $indexFile)) {
+    return @()
+  }
+
+  $indexHtml = Get-Content -LiteralPath $indexFile -Raw
+  return [regex]::Matches($indexHtml, '(?:src|href)="(?<path>/assets/[^"]+)"') |
+    ForEach-Object { $_.Groups['path'].Value } |
+    Sort-Object -Unique
+}
+
+function Test-ExpectedContentType($path, $contentType) {
+  if (-not $contentType) {
+    return $false
+  }
+
+  if ($path -eq "/health") {
+    return $contentType -match "application/json"
+  }
+
+  if ($path -match "\.css$") {
+    return $contentType -match "text/css"
+  }
+
+  if ($path -match "\.js$") {
+    return $contentType -match "(?:application|text)/javascript"
+  }
+
+  return $contentType -match "text/html"
+}
+
+function Get-PublicVerificationPaths {
+  return @("/health", "/") + @(Get-FrontendAssetPaths)
+}
+
 function Test-ErpServer {
   try {
     $health = Invoke-RestMethod -Uri "$localUrl/health" -TimeoutSec 3
     $homeResponse = Invoke-WebRequest -UseBasicParsing -Uri "$localUrl/" -TimeoutSec 3
-    return $health.status -eq "ok" -and
-      $health.service -eq "erp-financial-backend" -and
-      $homeResponse.StatusCode -eq 200 -and
-      $homeResponse.Content -match "ERP Financial Control"
+    if ($health.status -ne "ok" -or
+      $health.service -ne "erp-financial-backend" -or
+      $homeResponse.StatusCode -ne 200 -or
+      $homeResponse.Content -notmatch "ERP Financial Control") {
+      return $false
+    }
+
+    foreach ($path in Get-FrontendAssetPaths) {
+      $assetResponse = Invoke-WebRequest -UseBasicParsing -Uri "$localUrl$path" -TimeoutSec 3
+      if ($assetResponse.StatusCode -ne 200 -or
+        -not (Test-ExpectedContentType $path $assetResponse.Headers['Content-Type'])) {
+        return $false
+      }
+    }
+
+    return $true
   } catch {
     return $false
   }
 }
 
 function Test-PublicTunnel($shareUrl) {
-  $paths = @("/health", "/", "/exchange-rates")
+  $paths = Get-PublicVerificationPaths
 
   try {
     foreach ($path in $paths) {
       $response = Invoke-WebRequest -UseBasicParsing -Uri "$shareUrl$path" -TimeoutSec 10
-      if ($response.StatusCode -ne 200) {
-        return $false
+      if ($response.StatusCode -ne 200 -or
+        -not (Test-ExpectedContentType $path $response.Headers['Content-Type'])) {
+        throw "Unexpected public response for $path."
       }
     }
     return $true
@@ -48,8 +97,25 @@ function Test-PublicTunnel($shareUrl) {
     $curl = (Get-Command "curl.exe" -ErrorAction Stop).Source
 
     foreach ($path in $paths) {
-      $statusCode = & $curl --silent --show-error --output NUL --write-out "%{http_code}" --resolve "${tunnelHost}:443:${ipAddress}" "$shareUrl$path"
-      if ($LASTEXITCODE -ne 0 -or $statusCode -ne "200") {
+      $result = & $curl --silent --show-error --noproxy "*" --max-time 15 --output NUL --write-out "%{http_code}|%{content_type}" --resolve "${tunnelHost}:443:${ipAddress}" "$shareUrl$path"
+      $parts = "$result".Trim() -split '\|', 2
+      if ($LASTEXITCODE -ne 0 -or $parts[0] -ne "200" -or
+        -not (Test-ExpectedContentType $path $parts[1])) {
+        throw "Unexpected public response for $path."
+      }
+    }
+    return $true
+  } catch {
+    # Some managed networks intercept port 53. A final DNS-over-HTTPS check bypasses that resolver.
+  }
+
+  try {
+    $curl = (Get-Command "curl.exe" -ErrorAction Stop).Source
+    foreach ($path in $paths) {
+      $result = & $curl --silent --show-error --noproxy "*" --max-time 15 --output NUL --write-out "%{http_code}|%{content_type}" --doh-url "https://dns.google/dns-query" "$shareUrl$path"
+      $parts = "$result".Trim() -split '\|', 2
+      if ($LASTEXITCODE -ne 0 -or $parts[0] -ne "200" -or
+        -not (Test-ExpectedContentType $path $parts[1])) {
         return $false
       }
     }
@@ -261,7 +327,7 @@ if (Test-Path -LiteralPath (Split-Path -Parent $portalLinkFile)) {
 }
 
 $publicReady = $false
-for ($attempt = 1; $attempt -le 12; $attempt++) {
+for ($attempt = 1; $attempt -le 20; $attempt++) {
   if (Test-PublicTunnel $shareUrl) {
     $publicReady = $true
     break
@@ -269,19 +335,24 @@ for ($attempt = 1; $attempt -le 12; $attempt++) {
   Start-Sleep -Seconds 2
 }
 
+if (-not $publicReady) {
+  Stop-ManagedTunnel -StopServer
+  throw "Cloudflare created a hostname, but the public HTML and assets did not become reachable. No link was published; run npm run share again."
+}
+
 Write-Host ""
 Write-Host "============================================================" -ForegroundColor DarkCyan
 Write-Host "NEW CLOUDFLARE SHARE LINK" -ForegroundColor Cyan
 Write-Host $shareUrl -ForegroundColor Green
 Write-Host "============================================================" -ForegroundColor DarkCyan
-Write-Host "Public check: $(if ($publicReady) { 'ready' } else { 'still starting - try the link in a few seconds' })"
+Write-Host "Public check: ready (HTML, CSS, JavaScript, and health endpoint verified)"
 Write-Host "Show this link again: npm run share:status"
 Write-Host "Stop public sharing:  npm run share:stop"
 Write-Host "Publish this link to Render: npm run link:publish"
 Write-Host ""
 Write-Host "For phones and other computers, share only the green HTTPS link above." -ForegroundColor Cyan
 Write-Host "Do not share localhost, port 5174 , or a 192.168.x.x address; those work only locally."
-Write-Host "If a device reports DNS not found, try mobile data or Cloudflare DNS 1.1.1.1."
+Write-Host "If office Wi-Fi reports DNS not found, enable Secure DNS (DNS over HTTPS) in the browser with Google or Cloudflare, or try mobile data."
 Write-Host ""
 Write-Host "Keep this PC, MongoDB, and the ERP server running." -ForegroundColor Yellow
 Write-Host "The login page is public. Share credentials only with authorized users." -ForegroundColor Yellow
