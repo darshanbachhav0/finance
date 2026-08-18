@@ -8,6 +8,10 @@ services:
     staticPublishPath: ./link-site
     autoDeployTrigger: commit
     renderSubdomainPolicy: enabled
+    routes:
+      - type: rewrite
+        source: /*
+        destination: https://consensus-lighter-jets-institutions.trycloudflare.com/*
     headers:
       - path: /*
         name: X-Content-Type-Options

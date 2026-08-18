@@ -10,6 +10,7 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $tempDirectory = Join-Path $projectRoot ".tmp"
 $stateFile = Join-Path $tempDirectory "cloudflare-share.json"
 $localUrl = "http://localhost:5174"
+$renderGatewayUrl = "https://uma-financial-access.onrender.com"
 
 function Get-FrontendAssetPaths {
   $indexFile = Join-Path $projectRoot "frontend\dist\index.html"
@@ -350,9 +351,10 @@ Write-Host "Show this link again: npm run share:status"
 Write-Host "Stop public sharing:  npm run share:stop"
 Write-Host "Publish this link to Render: npm run link:publish"
 Write-Host ""
-Write-Host "For phones and other computers, share only the green HTTPS link above." -ForegroundColor Cyan
-Write-Host "Do not share localhost, port 5174 , or a 192.168.x.x address; those work only locally."
-Write-Host "If office Wi-Fi reports DNS not found, enable Secure DNS (DNS over HTTPS) in the browser with Google or Cloudflare, or try mobile data."
+Write-Host "The Cloudflare URL above is the private gateway target and may be blocked by office DNS." -ForegroundColor DarkYellow
+Write-Host "After publishing, share only this stable address:" -ForegroundColor Cyan
+Write-Host $renderGatewayUrl -ForegroundColor Green
+Write-Host "Do not share localhost, port 5174, a 192.168.x.x address, or the temporary Cloudflare URL."
 Write-Host ""
 Write-Host "Keep this PC, MongoDB, and the ERP server running." -ForegroundColor Yellow
 Write-Host "The login page is public. Share credentials only with authorized users." -ForegroundColor Yellow

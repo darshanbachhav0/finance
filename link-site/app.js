@@ -9,6 +9,8 @@ const updatedAt = document.querySelector("#updatedAt");
 const feedback = document.querySelector("#feedback");
 
 let activeUrl = "";
+const gatewayUrl = new URL("/login", window.location.origin).toString();
+const shareUrl = new URL("/", window.location.origin).toString();
 
 function setUnavailable(message) {
   activeUrl = "";
@@ -48,11 +50,11 @@ async function loadLink() {
       throw new Error("No active HTTPS tunnel is published.");
     }
 
-    activeUrl = parsedUrl.toString();
+    activeUrl = gatewayUrl;
     availability.dataset.state = "ready";
     availabilityText.textContent = "Access link available";
     delete linkField.dataset.state;
-    currentLink.textContent = activeUrl;
+    currentLink.textContent = shareUrl;
     openLink.href = activeUrl;
     openLink.classList.remove("is-disabled");
     openLink.setAttribute("aria-disabled", "false");
@@ -66,7 +68,7 @@ async function loadLink() {
 copyLink.addEventListener("click", async () => {
   if (!activeUrl) return;
   try {
-    await navigator.clipboard.writeText(activeUrl);
+    await navigator.clipboard.writeText(shareUrl);
     feedback.textContent = "Link copied to clipboard.";
     feedback.classList.remove("is-error");
   } catch {
