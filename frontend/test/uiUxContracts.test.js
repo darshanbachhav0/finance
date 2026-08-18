@@ -46,6 +46,16 @@ test("analytics provide real drilldowns and an exact tabular fallback", () => {
   assert.doesNotMatch(reports, /mock data/i);
 });
 
+test("shared login exposes all eight UMA demo roles and fills their credentials", () => {
+  const login = source("../src/pages/Login.jsx");
+  for (const key of ["admin", "solicitor", "director", "vice", "accounting", "treasury", "budget", "management"]) {
+    assert.match(login, new RegExp(`key: "${key}"`));
+  }
+  assert.match(login, /setEmail\(account\.email\)/);
+  assert.match(login, /setPassword\(account\.password\)/);
+  assert.doesNotMatch(login, /import\.meta\.env\.DEV\s*&&/);
+});
+
 for (const item of tests) {
   item.callback();
   console.log(`PASS ${item.name}`);

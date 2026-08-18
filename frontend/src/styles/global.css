@@ -684,6 +684,11 @@ h1, h2, h3 { letter-spacing: 0; color: var(--gray-950); }
 .login-form-heading svg { color: var(--teal-700); }
 .login-form-heading h1 { margin: 0; font-size: 20px; }
 .login-form-heading p { margin: 3px 0 0; color: var(--gray-600); font-size: 11px; }
+.login-role-access { min-width: 0; margin: 0; padding: 0; display: grid; gap: 7px; border: 0; }
+.login-role-access legend { width: 100%; margin-bottom: 7px; padding: 0; display: flex; align-items: center; gap: 7px; color: var(--navy-800); font-size: 12px; font-weight: 750; }
+.login-role-access legend svg { color: var(--teal-700); }
+.login-role-help { min-height: 17px; margin: 0; color: var(--gray-600); font-size: 11px; line-height: 1.45; }
+.login-role-help.is-ready { color: var(--green-700); font-weight: 650; }
 .login-submit { width: 100%; min-height: 40px; }
 .login-divider { position: relative; display: flex; align-items: center; justify-content: center; margin: 5px 0; color: var(--gray-500); font-size: 9px; text-transform: uppercase; }
 .login-divider::before { position: absolute; left: 0; right: 0; height: 1px; content: ""; background: var(--gray-200); }
