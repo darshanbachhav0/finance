@@ -218,5 +218,5 @@ export const getTaskSummary = asyncHandler(async (req, res) => res.json(await bu
 export const getDashboardSummary = asyncHandler(async (req, res) => {
   const [common, tasks] = await Promise.all([commonSummary(req.user), buildTasks(req.user)]);
   const details = await roleDetails(req.user, common);
-  res.json({ role: req.user.role, ...common, tasks, ...details });
+  res.json({ role: req.user.role, ...common, tasks, ...details, lastUpdated: new Date().toISOString() });
 });

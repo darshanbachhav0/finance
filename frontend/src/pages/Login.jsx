@@ -7,21 +7,21 @@ import { useAuth } from "../context/AuthContext.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
 
 const demos = [
-  { key: "admin", role: "Admin", email: "admin@erp.local", password: "Admin12345!" },
-  { key: "solicitor", role: "Solicitor", email: "solicitor@erp.local", password: "User123456!" },
-  { key: "director", role: "Area Director", email: "director@erp.local", password: "Director123!" },
-  { key: "vice", role: "Vice Rector", email: "vicerector@erp.local", password: "ViceRector123!" },
-  { key: "accounting", role: "Accounting", email: "accounting@erp.local", password: "Accounting123!" },
-  { key: "treasury", role: "Treasury", email: "treasury@erp.local", password: "Treasury123!" },
-  { key: "budget", role: "Budget", email: "budget@erp.local", password: "Budget12345!" },
-  { key: "management", role: "Management", email: "management@erp.local", password: "Management123!" }
+  { key: "admin", role: "Admin", email: "demo.admin@uma.edu.pe", password: "UMA-Demo-2026!" },
+  { key: "solicitor", role: "Solicitor", email: "demo.solicitante.salud@uma.edu.pe", password: "UMA-Demo-2026!" },
+  { key: "director", role: "Area Director", email: "demo.director.salud@uma.edu.pe", password: "UMA-Demo-2026!" },
+  { key: "vice", role: "Vice Rector", email: "demo.vicerrector@uma.edu.pe", password: "UMA-Demo-2026!" },
+  { key: "accounting", role: "Accounting", email: "demo.contabilidad@uma.edu.pe", password: "UMA-Demo-2026!" },
+  { key: "treasury", role: "Treasury", email: "demo.tesoreria@uma.edu.pe", password: "UMA-Demo-2026!" },
+  { key: "budget", role: "Budget", email: "demo.presupuesto@uma.edu.pe", password: "UMA-Demo-2026!" },
+  { key: "management", role: "Management", email: "demo.gerencia@uma.edu.pe", password: "UMA-Demo-2026!" }
 ];
 
 export default function Login() {
   const { login, isAuthenticated } = useAuth();
   const { t } = useLanguage();
-  const [email, setEmail] = useState(import.meta.env.DEV ? "admin@erp.local" : "");
-  const [password, setPassword] = useState(import.meta.env.DEV ? "Admin12345!" : "");
+  const [email, setEmail] = useState(import.meta.env.DEV ? "demo.admin@uma.edu.pe" : "");
+  const [password, setPassword] = useState(import.meta.env.DEV ? "UMA-Demo-2026!" : "");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 

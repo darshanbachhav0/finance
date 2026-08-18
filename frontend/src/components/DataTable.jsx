@@ -2,14 +2,17 @@ import {
   ArrowDown,
   ArrowUp,
   ChevronsUpDown,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   FilterX,
+  ListFilter,
   Search
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import EmptyState from "./EmptyState.jsx";
 import RowActionMenu from "./RowActionMenu.jsx";
+import TableTools from "./TableTools.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
 
 function rawValue(column, row) {
@@ -41,6 +44,9 @@ export default function DataTable({
   rowActions,
   onRowClick,
   toolbarActions,
+  tableId,
+  exportable = false,
+  onExport,
   emptyDescription = "Adjust filters or create a new record.",
   caption,
   remote
@@ -51,6 +57,10 @@ export default function DataTable({
   const [sort, setSort] = useState(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(initialPageSize);
+  const [density, setDensity] = useState(() => localStorage.getItem("erp_table_density") || "comfortable");
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+  const tableIdentity = tableId || caption || searchPlaceholder || columns.map((column) => column.key).join("-");
+  const preferenceKey = `erp_table_views:${String(tableIdentity).replace(/[^a-z0-9_-]+/gi, "-").toLowerCase()}`;
 
   const isRemote = Boolean(remote?.onQueryChange);
   const activeSearch = isRemote ? remote.query?.search || "" : search;
@@ -98,6 +108,7 @@ export default function DataTable({
   const selectableVisible = visibleRows.filter((row) => !selection?.isRowSelectable || selection.isRowSelectable(row));
   const allVisibleSelected = selectableVisible.length > 0 && selectableVisible.every((row) => selectedIds.includes(row[rowKey]));
   const hasFilters = Boolean(activeSearch) || Object.values(activeFilters).some(Boolean);
+  const activeFilterCount = Object.values(activeFilters).filter(Boolean).length;
 
   function updateRemote(patch) {
     remote.onQueryChange({ ...remote.query, ...patch });
@@ -133,8 +144,51 @@ export default function DataTable({
     }
   }
 
+  function changeDensity(value) {
+    setDensity(value);
+    localStorage.setItem("erp_table_density", value);
+  }
+
+  function applySavedView(view) {
+    if (view.density) changeDensity(view.density);
+    if (isRemote) {
+      updateRemote({
+        search: view.search || "",
+        filters: view.filters || {},
+        sort: view.sort || null,
+        pageSize: view.pageSize || initialPageSize,
+        page: 1
+      });
+    } else {
+      setSearch(view.search || "");
+      setFilterValues(view.filters || {});
+      setSort(view.sort || null);
+      setPageSize(view.pageSize || initialPageSize);
+      setPage(1);
+    }
+  }
+
+  function exportCurrentResults() {
+    const exportColumns = columns.filter((column) => column.key !== "actions" && column.exportable !== false);
+    const exportRows = isRemote ? rows : processed;
+    const escape = (value) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+    const csv = [
+      exportColumns.map((column) => escape(t(column.label))).join(","),
+      ...exportRows.map((row) => exportColumns.map((column) => {
+        const value = column.exportValue ? column.exportValue(row) : rawValue(column, row);
+        return escape(typeof value === "object" ? JSON.stringify(value) : value);
+      }).join(","))
+    ].join("\r\n");
+    const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${String(tableIdentity).replace(/[^a-z0-9_-]+/gi, "-").toLowerCase()}-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
   return (
-    <div className={`data-table ${className}`.trim()}>
+    <div className={`data-table density-${density} ${className}`.trim()}>
       {controls && (
         <div className="table-toolbar">
           <div className="table-toolbar-primary">
@@ -143,25 +197,38 @@ export default function DataTable({
               <span className="sr-only">{t("Search")}</span>
               <input value={activeSearch} onChange={(event) => isRemote ? updateRemote({ search: event.target.value, page: 1 }) : setSearch(event.target.value)} placeholder={t(searchPlaceholder)} />
             </label>
-            {filters.map((filter) => (
-              <label className="compact-field" key={filter.key}>
-                <span className="sr-only">{t(filter.label)}</span>
-                <select value={activeFilters[filter.key] || ""} onChange={(event) => isRemote ? updateRemote({ filters: { ...activeFilters, [filter.key]: event.target.value }, page: 1 }) : setFilterValues((current) => ({ ...current, [filter.key]: event.target.value }))}>
-                  <option value="">{t(filter.allLabel || `All ${filter.label.toLowerCase()}`)}</option>
-                  {filter.options.map((option) => (
-                    <option key={option.value ?? option} value={option.value ?? option}>{t(option.label ?? option)}</option>
-                  ))}
-                </select>
-              </label>
-            ))}
-            {hasFilters && (
-              <button type="button" className="text-button" onClick={clearFilters}>
-                <FilterX size={15} />
-                <span>{t("Clear filters")}</span>
-              </button>
-            )}
+            {filters.length > 0 && <button type="button" className={`table-filter-toggle${activeFilterCount ? " has-active" : ""}`} aria-expanded={mobileFiltersOpen} onClick={() => setMobileFiltersOpen((current) => !current)}><ListFilter size={16} /><span>{t("Filters")}{activeFilterCount ? ` (${activeFilterCount})` : ""}</span><ChevronDown size={15} /></button>}
+            <div className={`table-filter-fields${mobileFiltersOpen ? " is-open" : ""}`}>
+              {filters.map((filter) => (
+                <label className="compact-field" key={filter.key}>
+                  <span className="sr-only">{t(filter.label)}</span>
+                  <select value={activeFilters[filter.key] || ""} onChange={(event) => isRemote ? updateRemote({ filters: { ...activeFilters, [filter.key]: event.target.value }, page: 1 }) : setFilterValues((current) => ({ ...current, [filter.key]: event.target.value }))}>
+                    <option value="">{t(filter.allLabel || `All ${filter.label.toLowerCase()}`)}</option>
+                    {filter.options.map((option) => (
+                      <option key={option.value ?? option} value={option.value ?? option}>{t(option.label ?? option)}</option>
+                    ))}
+                  </select>
+                </label>
+              ))}
+              {hasFilters && (
+                <button type="button" className="text-button" onClick={clearFilters}>
+                  <FilterX size={15} />
+                  <span>{t("Clear filters")}</span>
+                </button>
+              )}
+            </div>
           </div>
-          {toolbarActions && <div className="table-toolbar-actions">{toolbarActions}</div>}
+          <div className="table-toolbar-actions">
+            {toolbarActions}
+            <TableTools
+              storageKey={preferenceKey}
+              query={{ search: activeSearch, filters: activeFilters, sort: activeSort, pageSize: activePageSize, density }}
+              onApplyView={applySavedView}
+              density={density}
+              onDensityChange={changeDensity}
+              onExport={onExport ? () => onExport({ rows: visibleRows, query: { search: activeSearch, filters: activeFilters, sort: activeSort, pageSize: activePageSize } }) : exportable ? exportCurrentResults : undefined}
+            />
+          </div>
         </div>
       )}
 

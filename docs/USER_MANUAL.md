@@ -2,7 +2,7 @@
 
 ## Bilingual User and Operations Manual / Manual Bilingüe de Usuario y Operaciones
 
-Version: 2026-08-10
+Version: 2026-08-11
 
 ---
 
@@ -33,6 +33,14 @@ The main screen has:
 
 Tables support Search, column filters, sorting, rows per page, previous/next page, result count, and Clear filters. Use the checkboxes where bulk selection is available.
 
+### Faster navigation and personal table setup
+
+- Press **Ctrl/Cmd+K** or `/` outside a form field to search authorized pages and exact request references. Use Arrow keys, Home/End, Enter, or Escape.
+- Choose **Compact** or **Comfortable** density from a table toolbar. The preference applies across operational tables.
+- Use **Save current view** to name the current search, filters, sorting, density, and page size on this device. Select it later from **Saved views**, or delete it with the adjacent delete icon.
+- Returning from Request Detail preserves the Requests search, filters, sorting, page, and page size for the browser session.
+- On tablet/mobile, select **Filters** to expand table filters. Three-dot actions open as a focus-managed bottom sheet.
+
 ## 3. Roles and Access
 
 | Role | Main work |
@@ -61,6 +69,8 @@ The Dashboard changes by role.
 - **Admin:** system totals, users, workflow health, master-data warnings, and activity.
 
 Select a task or table row to open the related page.
+
+Dashboards show **Last updated** and **Refresh**. Charts provide exact hover values, click-through to filtered requests where available, and **View exact data** for an accessible table. Management Reports adds period/date, currency, request type, area, Cost Center, and project filters; previous-period comparison; budget execution; CAPEX/OPEX; monthly/yearly trends; area/project/account/supplier analysis; lifecycle and SLA; CXP ageing; Treasury schedule; rendition; reconciliation; exceptions; and period-close readiness.
 
 ## 5. Create or Correct a Request
 
@@ -215,6 +225,7 @@ After required approval, the system can generate an internal purchase order with
 ## 13. Reports, SIRE, and Audit
 
 - **Management Reports:** period/date filters, CAPEX/OPEX, budget execution, area/project spend, commitments, CXP, Treasury schedule, and export history according to role.
+- **Print request record:** open Request Detail and select **Print record**. Navigation and action controls are removed from the printed financial record.
 - **Month-end consolidation:** groups journal data by Cost Center and account. Export is allowed only when source and centralization totals reconcile to zero difference.
 - **SIRE/RCE:** shows eligible rows, exclusions, warnings, and CSV history. It prepares a file only; it does not submit directly to SUNAT.
 - **Audit Viewer:** Admin/Accounting can search append-only records. Normal application routes cannot update or delete audit events.
@@ -256,6 +267,14 @@ Abra la dirección local o HTTPS compartida e ingrese correo y contraseña. Un u
 
 Las tablas permiten Buscar, filtrar, ordenar, cambiar filas por página, avanzar o retroceder, ver resultados y Limpiar filtros. Los cuadros de selección se usan para acciones masivas.
 
+### Navegación rápida y configuración personal de tablas
+
+- Presione **Ctrl/Cmd+K** o `/` fuera de un campo para buscar páginas autorizadas y referencias exactas de solicitud. Use flechas, Inicio/Fin, Enter o Escape.
+- Elija densidad **Compacta** o **Cómoda**. La preferencia se aplica a las tablas operativas.
+- Use **Guardar vista actual** para conservar en este dispositivo la búsqueda, filtros, orden, densidad y tamaño de página. Recupérela en **Vistas guardadas** o elimínela con el icono adyacente.
+- Al volver desde el detalle se conservan búsqueda, filtros, orden, página y tamaño durante la sesión del navegador.
+- En tablet/celular, seleccione **Filtros** para desplegarlos. Las acciones de tres puntos aparecen como una hoja inferior con control de foco.
+
 ## 3. Roles y acceso
 
 | Rol | Trabajo principal |
@@ -276,6 +295,8 @@ El servidor vuelve a validar el permiso en cada acción. Ocultar o mostrar un bo
 El Dashboard cambia según el rol: el Solicitante ve borradores, correcciones y rendiciones; el Aprobador ve pendientes, montos y SLA; Contabilidad ve período, cola fiscal, CXP y asientos; Tesorería ve pagos, monedas, datos bancarios, lotes y conciliaciones; Presupuesto ve Asignado, Comprometido, Ejecutado, Pagado y Disponible; Gerencia ve ejecución global y tendencias; Admin ve salud general, usuarios y alertas maestras.
 
 Seleccione una tarea o fila para abrir el trabajo relacionado.
+
+Los paneles muestran **Última actualización** y **Actualizar**. Los gráficos ofrecen valores exactos, acceso a solicitudes filtradas y **Ver datos exactos** como tabla accesible. Reportes Gerenciales incluye filtros de período/fecha, moneda, tipo, área, Centro de Costos y proyecto; comparación anterior; presupuesto; CAPEX/OPEX; tendencias; análisis por área/proyecto/cuenta/proveedor; ciclo y SLA; antigüedad CXP; programación de Tesorería; rendición; conciliación; excepciones y preparación del cierre.
 
 ## 5. Crear o corregir una solicitud
 
@@ -359,6 +380,8 @@ Luego use **Conciliar pago** con referencia bancaria, diferencia y comentario. L
 ## 13. Reportes, SIRE y auditoría
 
 **Reportes Gerenciales** usa datos transaccionales y filtros. **Consolidación mensual** agrupa por Centro de Costos/cuenta y exige diferencia cero. **SIRE/RCE** prepara y exporta CSV con advertencias e historial; no envía directamente a SUNAT. **Visor de auditoría** es de solo lectura; las rutas normales no modifican ni eliminan eventos.
+
+Para imprimir un expediente, abra Detalle de Solicitud y seleccione **Imprimir expediente**. La versión impresa oculta navegación y controles de acción, pero conserva el registro financiero.
 
 ## 14. Uso seguro
 

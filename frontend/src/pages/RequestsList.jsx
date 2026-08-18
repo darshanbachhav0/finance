@@ -25,12 +25,25 @@ export default function RequestsList() {
   const [actionError, setActionError] = useState("");
   const [deleting, setDeleting] = useState(false);
   const requestsTable = usePaginatedResource("/requests", {
-    initialFilters: { status: searchParams.get("status") || "" }
+    initialSearch: searchParams.get("search") || "",
+    initialFilters: {
+      status: searchParams.get("status") || "",
+      requestType: searchParams.get("requestType") || "",
+      currency: searchParams.get("currency") || "",
+      period: searchParams.get("period") || "",
+      project: searchParams.get("project") || "",
+      costCenter: searchParams.get("costCenter") || ""
+    },
+    persistKey: "requests-list"
   });
   const periodsResource = usePaginatedResource("/accounting-periods", { initialPageSize: 100, debounceMs: 0 });
+  const costCentersResource = usePaginatedResource("/cost-centers", { initialPageSize: 100, debounceMs: 0, persistKey: "request-filter-cost-centers" });
+  const projectsResource = usePaginatedResource("/projects", { initialPageSize: 100, debounceMs: 0, persistKey: "request-filter-projects" });
   const { rows, loading } = requestsTable;
 
   const periods = useMemo(() => periodsResource.rows.map((row) => row.period), [periodsResource.rows]);
+  const costCenters = useMemo(() => costCentersResource.rows.map((row) => ({ value: row._id, label: `${row.code} - ${row.name}` })), [costCentersResource.rows]);
+  const projects = useMemo(() => projectsResource.rows.map((row) => ({ value: row.code || row.name, label: `${row.code || ""} ${row.name || ""}`.trim() })), [projectsResource.rows]);
   const canCreate = ["Admin", "Solicitor"].includes(user.role);
 
   function isOwner(row) {
@@ -71,6 +84,8 @@ export default function RequestsList() {
       <Message type="error">{actionError || requestsTable.error}</Message>
       <div className="workspace-panel">
         <DataTable
+          tableId="requests"
+          exportable
           rows={rows}
           loading={loading}
           remote={requestsTable.remote}
@@ -79,7 +94,10 @@ export default function RequestsList() {
             { key: "requestType", label: "types", allLabel: "All types", options: requestTypes },
             { key: "expenseNature", label: "expense natures", allLabel: "All expense natures", options: expenseNatures },
             { key: "priority", label: "priorities", allLabel: "All priorities", options: requestPriorities },
-            { key: "period", getValue: (row) => row.accountingPeriod, label: "periods", allLabel: "All periods", options: periods }
+            { key: "currency", label: "currencies", allLabel: "All currencies", options: ["PEN", "USD"] },
+            { key: "period", getValue: (row) => row.accountingPeriod, label: "periods", allLabel: "All periods", options: periods },
+            { key: "costCenter", label: "Cost Centers", allLabel: "All Cost Centers", options: costCenters },
+            { key: "project", label: "projects", allLabel: "All projects", options: projects }
           ]}
           searchPlaceholder="Search request, supplier, solicitor..."
           onRowClick={(row) => setQuickViewId(row._id)}

@@ -71,23 +71,25 @@ These credentials are created only by the development seed and must not be used 
 
 | Profile | Email | Password |
 |---|---|---|
-| Admin | `admin@erp.local` | `Admin12345!` |
-| Solicitor | `solicitor@erp.local` | `User123456!` |
-| Area Director | `director@erp.local` | `Director123!` |
-| Vice Rector | `vicerector@erp.local` | `ViceRector123!` |
-| Accounting | `accounting@erp.local` | `Accounting123!` |
-| Treasury | `treasury@erp.local` | `Treasury123!` |
-| Budget | `budget@erp.local` | `Budget12345!` |
-| Management | `management@erp.local` | `Management123!` |
+| Administrador | `demo.admin@uma.edu.pe` | `UMA-Demo-2026!` |
+| Solicitante | `demo.solicitante.salud@uma.edu.pe` | `UMA-Demo-2026!` |
+| Director de Área | `demo.director.salud@uma.edu.pe` | `UMA-Demo-2026!` |
+| Vicerrector | `demo.vicerrector@uma.edu.pe` | `UMA-Demo-2026!` |
+| Presupuesto | `demo.presupuesto@uma.edu.pe` | `UMA-Demo-2026!` |
+| Contabilidad | `demo.contabilidad@uma.edu.pe` | `UMA-Demo-2026!` |
+| Tesorería | `demo.tesoreria@uma.edu.pe` | `UMA-Demo-2026!` |
+| Gerencia / Rectorado | `demo.gerencia@uma.edu.pe` | `UMA-Demo-2026!` |
 
-The seed is idempotent and includes representative master data and lifecycle scenarios. To reset only a database whose name clearly identifies it as development:
+The seed is idempotent and contains a cohesive, fictional UMA demonstration dataset. It covers the eight operating profiles, UMA faculties and Cost Centers, homologated suppliers, approvals, budgets, XML validation, Accounting/CXP, four-bank demo TXT batches, payment confirmation, rendition, reconciliation, and closure. See `docs/UMA_DEMO_DATA.md`.
+
+To purge and recreate only a database whose name clearly identifies it as development:
 
 ```powershell
 npm run seed:reset
 npm run seed
 ```
 
-The reset command is disabled when `NODE_ENV=production` and requires its built-in confirmation flag.
+The reset command is disabled when `NODE_ENV=production`, requires its built-in confirmation flag, and removes active development uploads/generated files after a backup is taken separately.
 
 ## Tests and Build
 

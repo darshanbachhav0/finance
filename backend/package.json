@@ -8,11 +8,12 @@
     "start": "node server.js",
     "start:public": "node public-server.js",
     "seed": "node src/seed/seed.js",
-    "seed:reset": "node scripts/resetDevelopment.js --confirm",
+    "seed:reset": "node scripts/resetDevelopment.js --confirm --purge-files",
     "migrate:workflow": "node scripts/migrateCanonicalWorkflow.js",
     "migrate:workflow:apply": "node scripts/migrateCanonicalWorkflow.js --apply",
     "backup": "node scripts/backupLocalData.js",
     "verify:data": "node scripts/verifyCanonicalData.js",
+    "verify:uma-demo": "node scripts/verifyUmaDemoData.js",
     "rotate:deployment-passwords": "node scripts/rotateDeploymentPasswords.js",
     "test": "node test/run.js"
   },

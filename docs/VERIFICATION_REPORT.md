@@ -1,14 +1,14 @@
 # Verification Report
 
-Date: 2026-08-10
+Date: 2026-08-11
 
 ## Automated Gates
 
 | Gate | Result | Notes |
 |---|---|---|
 | Backend tests | PASS - 43/43 | Domain foundation, workflow, permissions, period/audit, budget, accounting, Treasury, rendition, migration, and security contracts. |
-| Frontend tests | PASS - 11/11 | Role navigation, financial contracts, request workflow, table/menu behavior, language and protected-asset contracts. |
-| Frontend production build | PASS | Vite built 1,693 modules; initial JavaScript bundle is approximately 295 KB. |
+| Frontend tests | PASS - 15/15 | Role navigation, financial contracts, table/menu behavior, localized formatting, saved views/density, focus contracts and accessible analytics. |
+| Frontend production build | PASS | Vite built 2,286 modules. Reporting remains route-lazy; the primary bundle is approximately 312 KB before gzip. |
 | Canonical data verification | PASS | No legacy/unknown statuses or duplicate request numbers in the active dataset. |
 | Translation key audit | PASS | 286 literal UI keys checked against the merged English/Spanish dictionaries; no missing entries. |
 | Word manual accessibility | PASS | Final bilingual DOCX audit reported 0 high, 0 medium and 0 low findings. |
@@ -31,12 +31,12 @@ Date: 2026-08-10
 
 ## Browser and Responsive Verification
 
-The clean verification instance used frontend `http://localhost:5177` and backend `http://localhost:5002`.
+The UI/UX verification instance used frontend `http://localhost:5174` and backend `http://localhost:5000`.
 
 | Area | Verification |
 |---|---|
 | Roles | Admin, Solicitor, Area Director, Vice Rector, Accounting, Treasury, Budget, and Management each signed in successfully and received only their permitted navigation. |
-| Requests | Server search located a record outside the first page; first/middle/last row menus opened; Quick View and full detail loaded the complete control record. |
+| Requests | Server filters and report drilldown loaded the correct records; search/filter state survived detail navigation; wizard validation and print action were verified without writing data. |
 | Request wizard | Four steps, open-period selection, closed-period disabling, required-field errors, and draft autosave status were verified without writing test data. |
 | Approvals | Inbox counters, SLA data, role boundaries, and menu/dialog behavior were verified. |
 | Budget | Paginated allocations, exceptions and commitments matched the shared budget summary service. |
@@ -44,11 +44,14 @@ The clean verification instance used frontend `http://localhost:5177` and backen
 | Treasury | Payable queue, confirmation queue, reconciliation, DEMO bank-format labels, file history and payment-confirmation warning were verified. TXT generation remains separate from payment. |
 | Suppliers/FX | Homologation and bank history display, online BCRP reference wording, editable FX form and authoritative-source warning were verified. |
 | SIRE/reports/audit | Preview warnings, export/report history and append-only audit viewer were verified. No direct SUNAT submission is claimed. |
-| Responsive layout | Checked at approximately 1280, 1024, 768 and 390 px. No page-level horizontal overflow was detected. |
-| Menus/focus | Desktop portal positioning remained within an 8 px viewport boundary. Mobile used a bottom action sheet. Arrow navigation, Escape, outside-close behavior and trigger focus restoration passed. |
-| Runtime logs | Backend and frontend stderr remained empty during the browser pass; observed API traffic returned successful 200/304 responses. |
+| Analytics | Normal real-data charts, empty request-type scope, four report tabs, prior-period comparison, exact-value fallback, Spanish labels and chart-to-request drilldown passed. |
+| Table productivity | Saved-view create/delete, compact/comfortable density, responsive filter disclosure, current-result export control and session context passed. |
+| Responsive layout | Checked at 1440, 1280, 1024, 768, 430 and 390 px. No page-level horizontal overflow was detected; chart/table overflow stayed within its local container. |
+| Menus/focus | Desktop portals were fixed outside table overflow for first/middle/last rows after horizontal/vertical scrolling. Mobile sheets, Arrow/Home/End/Enter/Escape, drawer focus trap and trigger focus restoration passed. |
+| Role access | Admin, Solicitor, Area Director, Vice Rector, Accounting, Treasury, Budget and Management signed in and received role-appropriate navigation and dashboard data. |
+| Runtime logs | A blank report request-type option warning was found and fixed. The final clean-browser pass reported no console errors or warnings. |
 
-Representative screenshots are retained in `docs/screenshots` for 1280, 1024, 768 and 390 px verification.
+Representative screenshots are retained in `docs/screenshots`, including `admin-dashboard-1440.png`, `management-reports-1280.png`, `management-reports-tablet-768.png`, `management-reports-mobile-390-es.png`, and `request-actions-mobile-390.png`.
 
 ## External Limitations
 

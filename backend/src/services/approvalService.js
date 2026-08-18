@@ -244,7 +244,12 @@ export async function decideApproval({ id, action, comments, adminOverrideReason
       RETURN: REQUEST_STATUS.RETURNED,
       REJECT: REQUEST_STATUS.REJECTED
     };
-    stopApprovalRoute(request, decision === "RETURN" ? "RETURNED" : `${decision}D`);
+    const stoppedStatus = {
+      OBSERVE: "OBSERVED",
+      RETURN: "RETURNED",
+      REJECT: "REJECTED"
+    }[decision];
+    stopApprovalRoute(request, stoppedStatus);
     request.rejectionReason = comments;
     await transitionRequest({
       request,
@@ -313,7 +318,8 @@ export async function decideApproval({ id, action, comments, adminOverrideReason
   });
 
   let budgetWarning;
-  if (routeResult.complete) {
+  const requiresBudgetHandoff = routeResult.complete && user.role === ROLES.MANAGEMENT;
+  if (routeResult.complete && !requiresBudgetHandoff) {
     try {
       await commitApprovedRequestBudget({ request, user, req });
     } catch (error) {
@@ -351,6 +357,17 @@ export async function decideApproval({ id, action, comments, adminOverrideReason
       type: "BUDGET_EXCEPTION",
       title: "Budget exception pending",
       message: `${request.requestNumber} cannot be committed until its budget exception is resolved.`,
+      path: "/budget",
+      entityType: "FinancialRequest",
+      entityId: request._id
+    });
+  } else if (requiresBudgetHandoff) {
+    await notifyRoles({
+      roles: [ROLES.BUDGET, ROLES.ADMIN],
+      eventKey: `request:${request._id}:budget-commitment`,
+      type: "BUDGET_COMMITMENT",
+      title: "Budget commitment required",
+      message: `${request.requestNumber} completed Rectorate approval and is ready for budget commitment.`,
       path: "/budget",
       entityType: "FinancialRequest",
       entityId: request._id

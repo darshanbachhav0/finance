@@ -8,8 +8,6 @@ import AccountingPeriod from "../models/AccountingPeriod.js";
 import ApprovalRule from "../models/ApprovalRule.js";
 import BankFormatConfiguration from "../models/BankFormatConfiguration.js";
 import BudgetAllocation from "../models/BudgetAllocation.js";
-import BudgetCommitment from "../models/BudgetCommitment.js";
-import BudgetException from "../models/BudgetException.js";
 import BudgetRule from "../models/BudgetRule.js";
 import CostCenter from "../models/CostCenter.js";
 import Counter from "../models/Counter.js";
@@ -21,14 +19,21 @@ import Project from "../models/Project.js";
 import Supplier from "../models/Supplier.js";
 import SupplierBankAccount from "../models/SupplierBankAccount.js";
 import User from "../models/User.js";
+import { commitApprovedRequestBudget, decideApproval } from "../services/approvalService.js";
 import { processAccountsPayable } from "../services/accountingService.js";
-import { closeFinancialRequest } from "../services/requestService.js";
+import { recordAudit, workflowEvent } from "../services/auditService.js";
+import { closeFinancialRequest, submitFinancialRequest } from "../services/requestService.js";
+import { reviewRendition, submitRendition } from "../services/renditionService.js";
 import { generatedRoot, uploadRoot } from "../services/storageService.js";
-import { confirmTreasuryPayment, generatePaymentBatch, reconcilePayment } from "../services/treasuryService.js";
+import {
+  confirmTreasuryPayment,
+  generatePaymentBatch,
+  reconcilePayment,
+  schedulePayments
+} from "../services/treasuryService.js";
 import { connectDB } from "../config/db.js";
 import {
   APPROVAL_STAGES,
-  BUDGET_STATUS,
   EXPENSE_NATURE,
   REQUEST_STATUS,
   REQUEST_TYPE,
@@ -42,55 +47,271 @@ const currentDate = now.toISOString().slice(0, 10);
 const currentPeriod = currentDate.slice(0, 7);
 const previousMonthDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
 const closedPeriod = previousMonthDate.toISOString().slice(0, 7);
-const fakeReq = { headers: {}, ip: "127.0.0.1", socket: { remoteAddress: "127.0.0.1" } };
+const demoPassword = "UMA-Demo-2026!";
+const manualUsdRate = 3.75;
+const fakeReq = {
+  headers: { "user-agent": "UMA development seed" },
+  ip: "127.0.0.1",
+  socket: { remoteAddress: "127.0.0.1" }
+};
+
+const AREAS = Object.freeze({
+  HEALTH: "Facultad de Ciencias de la Salud",
+  PHARMACY: "Facultad de Farmacia y Bioquímica",
+  ENGINEERING: "Facultad de Ingeniería y Negocios",
+  FINANCE: "Administración y Finanzas",
+  RESEARCH: "Investigación y Posgrado",
+  RECTORATE: "Rectorado",
+  IT: "Tecnología de la Información"
+});
 
 async function upsert(Model, filter, values) {
   const insertOnly = Object.fromEntries(Object.entries(filter).filter(([key]) => values[key] === undefined));
-  return Model.findOneAndUpdate(filter, { $set: values, $setOnInsert: insertOnly }, { upsert: true, new: true, setDefaultsOnInsert: true, runValidators: true });
+  return Model.findOneAndUpdate(
+    filter,
+    { $set: values, $setOnInsert: insertOnly },
+    { upsert: true, new: true, setDefaultsOnInsert: true, runValidators: true }
+  );
 }
 
 async function seedCostCenters() {
-  const operations = await upsert(CostCenter, { code: "CC-OPS-010" }, { name: "Operations Lima", area: "Operations", annualBudget: 500000, budgetMode: "ACTIVE", active: true });
-  const administration = await upsert(CostCenter, { code: "CC-ADM-001" }, { name: "Administration", area: "Administration", annualBudget: 250000, budgetMode: "TRANSITIONAL", active: true });
-  const research = await upsert(CostCenter, { code: "CC-RES-020" }, { name: "Research", area: "Research", annualBudget: 350000, budgetMode: "ACTIVE", active: true });
-  return { operations, administration, research };
-}
-
-async function seedUsers(costCenters) {
-  const definitions = [
-    ["ERP Admin", "admin@erp.local", "Admin12345!", ROLES.ADMIN, undefined, "Systems", "*"],
-    ["Solicitor User", "solicitor@erp.local", "User123456!", ROLES.SOLICITOR, undefined, "Operations", "Operations"],
-    ["Area Director", "director@erp.local", "Director123!", ROLES.APPROVER, APPROVAL_STAGES.AREA_DIRECTOR, "Operations", "Operations"],
-    ["Vice Rector", "vicerector@erp.local", "ViceRector123!", ROLES.APPROVER, APPROVAL_STAGES.VICE_RECTOR, "Rectorate", "*"],
-    ["Accounting Analyst", "accounting@erp.local", "Accounting123!", ROLES.ACCOUNTING, undefined, "Accounting", "*"],
-    ["Treasury Analyst", "treasury@erp.local", "Treasury123!", ROLES.TREASURY, undefined, "Treasury", "*"],
-    ["Budget Analyst", "budget@erp.local", "Budget12345!", ROLES.BUDGET, undefined, "Budget", "*"],
-    ["Management Viewer", "management@erp.local", "Management123!", ROLES.MANAGEMENT, APPROVAL_STAGES.RECTORATE, "Rectorate", "*"]
-  ];
+  const definitions = {
+    health: ["CC-SAL-LAB-101", "Laboratorios de Ciencias de la Salud", AREAS.HEALTH, 780000],
+    pharmacy: ["CC-FAR-LAB-201", "Laboratorios de Farmacia y Bioquímica", AREAS.PHARMACY, 620000],
+    engineering: ["CC-ING-TI-301", "Ingeniería e Innovación Digital", AREAS.ENGINEERING, 1050000],
+    finance: ["CC-ADM-FIN-401", "Administración y Finanzas", AREAS.FINANCE, 480000],
+    research: ["CC-INV-POS-501", "Investigación y Posgrado", AREAS.RESEARCH, 280000],
+    rectorate: ["CC-REC-601", "Rectorado y Gerencia General", AREAS.RECTORATE, 260000]
+  };
   const result = {};
-  for (const [name, email, password, role, approvalLevel, area, approvalArea] of definitions) {
-    const passwordHash = await bcrypt.hash(password, 12);
-    result[role === ROLES.APPROVER ? approvalLevel : role] = await upsert(User, { email }, {
+  for (const [key, [code, name, area, annualBudget]] of Object.entries(definitions)) {
+    result[key] = await upsert(CostCenter, { code }, {
       name,
-      email,
-      passwordHash,
-      role,
-      approvalLevel,
-      approvalAreas: approvalArea ? [approvalArea] : [],
-      costCenter: role === ROLES.SOLICITOR ? costCenters.operations._id : undefined,
-      authorizedCostCenters: role === ROLES.SOLICITOR ? [costCenters.operations._id] : [],
       area,
+      annualBudget,
+      budgetMode: "ACTIVE",
       active: true
     });
   }
   return result;
 }
 
+async function seedUsers(costCenters) {
+  const definitions = [
+    {
+      key: "admin",
+      name: "Administración ERP UMA (Demo)",
+      email: "demo.admin@uma.edu.pe",
+      role: ROLES.ADMIN,
+      area: AREAS.IT,
+      approvalAreas: ["*"]
+    },
+    {
+      key: "solicitorHealth",
+      name: "Solicitante Ciencias de la Salud (Demo)",
+      email: "demo.solicitante.salud@uma.edu.pe",
+      role: ROLES.SOLICITOR,
+      area: AREAS.HEALTH,
+      costCenter: costCenters.health,
+      authorizedCostCenters: [costCenters.health]
+    },
+    {
+      key: "directorHealth",
+      name: "Dirección de Ciencias de la Salud (Demo)",
+      email: "demo.director.salud@uma.edu.pe",
+      role: ROLES.APPROVER,
+      approvalLevel: APPROVAL_STAGES.AREA_DIRECTOR,
+      area: AREAS.HEALTH,
+      approvalAreas: [AREAS.HEALTH]
+    },
+    {
+      key: "viceRector",
+      name: "Vicerrectorado Académico UMA (Demo)",
+      email: "demo.vicerrector@uma.edu.pe",
+      role: ROLES.APPROVER,
+      approvalLevel: APPROVAL_STAGES.VICE_RECTOR,
+      area: AREAS.RECTORATE,
+      approvalAreas: ["*"]
+    },
+    {
+      key: "budget",
+      name: "Presupuesto UMA (Demo)",
+      email: "demo.presupuesto@uma.edu.pe",
+      role: ROLES.BUDGET,
+      area: AREAS.FINANCE,
+      approvalAreas: ["*"]
+    },
+    {
+      key: "accounting",
+      name: "Contabilidad UMA (Demo)",
+      email: "demo.contabilidad@uma.edu.pe",
+      role: ROLES.ACCOUNTING,
+      area: AREAS.FINANCE,
+      approvalAreas: ["*"]
+    },
+    {
+      key: "treasury",
+      name: "Tesorería UMA (Demo)",
+      email: "demo.tesoreria@uma.edu.pe",
+      role: ROLES.TREASURY,
+      area: AREAS.FINANCE,
+      approvalAreas: ["*"]
+    },
+    {
+      key: "management",
+      name: "Gerencia / Rectorado UMA (Demo)",
+      email: "demo.gerencia@uma.edu.pe",
+      role: ROLES.MANAGEMENT,
+      approvalLevel: APPROVAL_STAGES.RECTORATE,
+      area: AREAS.RECTORATE,
+      approvalAreas: ["*"]
+    },
+    {
+      key: "solicitorPharmacy",
+      name: "Solicitante Farmacia y Bioquímica (Demo)",
+      email: "demo.solicitante.farmacia@uma.edu.pe",
+      role: ROLES.SOLICITOR,
+      area: AREAS.PHARMACY,
+      costCenter: costCenters.pharmacy,
+      authorizedCostCenters: [costCenters.pharmacy]
+    },
+    {
+      key: "directorPharmacy",
+      name: "Dirección de Farmacia y Bioquímica (Demo)",
+      email: "demo.director.farmacia@uma.edu.pe",
+      role: ROLES.APPROVER,
+      approvalLevel: APPROVAL_STAGES.AREA_DIRECTOR,
+      area: AREAS.PHARMACY,
+      approvalAreas: [AREAS.PHARMACY]
+    },
+    {
+      key: "solicitorEngineering",
+      name: "Solicitante Ingeniería y Negocios (Demo)",
+      email: "demo.solicitante.ingenieria@uma.edu.pe",
+      role: ROLES.SOLICITOR,
+      area: AREAS.ENGINEERING,
+      costCenter: costCenters.engineering,
+      authorizedCostCenters: [costCenters.engineering, costCenters.research]
+    },
+    {
+      key: "directorEngineering",
+      name: "Dirección de Ingeniería y Negocios (Demo)",
+      email: "demo.director.ingenieria@uma.edu.pe",
+      role: ROLES.APPROVER,
+      approvalLevel: APPROVAL_STAGES.AREA_DIRECTOR,
+      area: AREAS.ENGINEERING,
+      approvalAreas: [AREAS.ENGINEERING]
+    }
+  ];
+
+  const users = {};
+  for (const definition of definitions) {
+    const passwordHash = await bcrypt.hash(demoPassword, 12);
+    users[definition.key] = await upsert(User, { email: definition.email }, {
+      name: definition.name,
+      email: definition.email,
+      passwordHash,
+      role: definition.role,
+      approvalLevel: definition.approvalLevel,
+      approvalAreas: definition.approvalAreas || [],
+      costCenter: definition.costCenter?._id,
+      authorizedCostCenters: (definition.authorizedCostCenters || []).map((item) => item._id),
+      area: definition.area,
+      active: true
+    });
+  }
+  users.directorsByArea = {
+    [AREAS.HEALTH]: users.directorHealth,
+    [AREAS.PHARMACY]: users.directorPharmacy,
+    [AREAS.ENGINEERING]: users.directorEngineering
+  };
+  return users;
+}
+
 async function seedExpenseTypes() {
-  const service = await upsert(ExpenseType, { code: "G-601" }, { name: "Professional Services", category: "OPEX", accountingClass: "CLASS_6", accountNumber: "632101", deductible: true, permittedRequestTypes: [REQUEST_TYPE.OPEX, REQUEST_TYPE.ENTREGA_RENDIR, REQUEST_TYPE.REEMBOLSO_CON_SUSTENTO, REQUEST_TYPE.PAGO_CON_COTIZACION], active: true });
-  const capex = await upsert(ExpenseType, { code: "A-331" }, { name: "Computer Equipment", category: "CAPEX", accountingClass: "CLASS_3", accountNumber: "336101", deductible: true, permittedRequestTypes: [REQUEST_TYPE.CAPEX], active: true });
-  const nonDeductible = await upsert(ExpenseType, { code: "ND-991" }, { name: "Non-deductible Expense", category: "NON_DEDUCTIBLE", accountingClass: "NON_DEDUCTIBLE", accountNumber: "991001", deductible: false, permittedRequestTypes: [REQUEST_TYPE.REEMBOLSO_SIN_SUSTENTO], active: true });
-  return { service, capex, nonDeductible };
+  const definitions = {
+    laboratorySupplies: {
+      code: "OPE-603201",
+      name: "Suministros y reactivos de laboratorio",
+      category: "OPEX",
+      accountingClass: "CLASS_6",
+      accountNumber: "603201",
+      permittedRequestTypes: [REQUEST_TYPE.OPEX, REQUEST_TYPE.PAGO_CON_COTIZACION],
+      permittedExpenseNatures: [EXPENSE_NATURE.GOODS, EXPENSE_NATURE.LABORATORIES]
+    },
+    professionalServices: {
+      code: "OPE-632101",
+      name: "Servicios profesionales y consultoría",
+      category: "OPEX",
+      accountingClass: "CLASS_6",
+      accountNumber: "632101",
+      permittedRequestTypes: [
+        REQUEST_TYPE.OPEX,
+        REQUEST_TYPE.PAGO_CON_COTIZACION,
+        REQUEST_TYPE.REEMBOLSO_CON_SUSTENTO
+      ],
+      permittedExpenseNatures: [
+        EXPENSE_NATURE.SERVICES,
+        EXPENSE_NATURE.PROFESSIONAL_FEES,
+        EXPENSE_NATURE.CONSULTING
+      ]
+    },
+    maintenance: {
+      code: "OPE-634301",
+      name: "Mantenimiento de laboratorios e infraestructura",
+      category: "OPEX",
+      accountingClass: "CLASS_6",
+      accountNumber: "634301",
+      permittedRequestTypes: [REQUEST_TYPE.OPEX, REQUEST_TYPE.PAGO_CON_COTIZACION],
+      permittedExpenseNatures: [EXPENSE_NATURE.MAINTENANCE, EXPENSE_NATURE.INFRASTRUCTURE]
+    },
+    travel: {
+      code: "OPE-631101",
+      name: "Movilidad, viajes y entregas a rendir",
+      category: "OPEX",
+      accountingClass: "CLASS_6",
+      accountNumber: "631101",
+      permittedRequestTypes: [REQUEST_TYPE.OPEX, REQUEST_TYPE.ENTREGA_RENDIR],
+      permittedExpenseNatures: [EXPENSE_NATURE.TRAVEL, EXPENSE_NATURE.PETTY_CASH]
+    },
+    technologyAssets: {
+      code: "CAP-336101",
+      name: "Equipos de cómputo y tecnología educativa",
+      category: "CAPEX",
+      accountingClass: "CLASS_3",
+      accountNumber: "336101",
+      permittedRequestTypes: [REQUEST_TYPE.CAPEX],
+      permittedExpenseNatures: [EXPENSE_NATURE.EQUIPMENT, EXPENSE_NATURE.TECHNOLOGY]
+    },
+    laboratoryAssets: {
+      code: "CAP-333111",
+      name: "Equipamiento científico y de laboratorio",
+      category: "CAPEX",
+      accountingClass: "CLASS_3",
+      accountNumber: "333111",
+      permittedRequestTypes: [REQUEST_TYPE.CAPEX],
+      permittedExpenseNatures: [EXPENSE_NATURE.EQUIPMENT, EXPENSE_NATURE.LABORATORIES, EXPENSE_NATURE.RESEARCH]
+    },
+    nonDeductible: {
+      code: "NOD-659999",
+      name: "Gasto no deducible configurado",
+      category: "NON_DEDUCTIBLE",
+      accountingClass: "NON_DEDUCTIBLE",
+      accountNumber: "659999",
+      permittedRequestTypes: [REQUEST_TYPE.REEMBOLSO_SIN_SUSTENTO],
+      permittedExpenseNatures: [EXPENSE_NATURE.REIMBURSEMENT_LIQUIDATION],
+      deductible: false
+    }
+  };
+  const result = {};
+  for (const [key, values] of Object.entries(definitions)) {
+    result[key] = await upsert(ExpenseType, { code: values.code }, {
+      ...values,
+      deductible: values.deductible !== false,
+      active: true
+    });
+  }
+  return result;
 }
 
 async function ensureEvidence(domain, entityId, name, content) {
@@ -98,29 +319,55 @@ async function ensureEvidence(domain, entityId, name, content) {
   await fs.mkdir(directory, { recursive: true });
   const filePath = path.join(directory, name);
   await fs.writeFile(filePath, content);
-  return { originalName: name, filename: name, path: filePath, url: `/uploads/${domain}/${entityId}/${name}`, mimetype: name.endsWith(".xml") ? "application/xml" : "application/pdf", size: Buffer.byteLength(content) };
+  return {
+    originalName: name,
+    filename: name,
+    path: filePath,
+    url: `/uploads/${domain}/${entityId}/${name}`,
+    mimetype: name.endsWith(".xml") ? "application/xml" : "application/pdf",
+    size: Buffer.byteLength(content)
+  };
 }
 
 function minimalPdf(label) {
-  return `%PDF-1.4\n% UMA DEVELOPMENT EVIDENCE: ${label}\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n`;
+  return `%PDF-1.4\n% UMA DEMO EVIDENCE - ${label}\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n`;
 }
 
-function invoiceXml({ ruc, number, date, currency = "PEN", net = 100, igv = 18, total = 118 }) {
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<Invoice><ID>${number}</ID><IssueDate>${date}</IssueDate><DocumentCurrencyCode>${currency}</DocumentCurrencyCode><AccountingSupplierParty><Party><PartyIdentification><ID>${ruc}</ID></PartyIdentification><PartyLegalEntity><RegistrationName>UMA Demo Supplier</RegistrationName></PartyLegalEntity></Party></AccountingSupplierParty><TaxTotal><TaxAmount>${igv}</TaxAmount></TaxTotal><LegalMonetaryTotal><LineExtensionAmount>${net}</LineExtensionAmount><TaxExclusiveAmount>${net}</TaxExclusiveAmount><TaxInclusiveAmount>${total}</TaxInclusiveAmount><PayableAmount>${total}</PayableAmount></LegalMonetaryTotal></Invoice>`;
+function invoiceXml({ supplier, number, date, currency, net, igv, total }) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Invoice>
+  <ID>${number}</ID>
+  <IssueDate>${date}</IssueDate>
+  <DocumentCurrencyCode>${currency}</DocumentCurrencyCode>
+  <AccountingSupplierParty>
+    <Party>
+      <PartyIdentification><ID>${supplier.rucDni}</ID></PartyIdentification>
+      <PartyLegalEntity><RegistrationName>${supplier.legalName}</RegistrationName></PartyLegalEntity>
+    </Party>
+  </AccountingSupplierParty>
+  <TaxTotal><TaxAmount>${igv}</TaxAmount></TaxTotal>
+  <LegalMonetaryTotal>
+    <LineExtensionAmount>${net}</LineExtensionAmount>
+    <TaxExclusiveAmount>${net}</TaxExclusiveAmount>
+    <TaxInclusiveAmount>${total}</TaxInclusiveAmount>
+    <PayableAmount>${total}</PayableAmount>
+  </LegalMonetaryTotal>
+</Invoice>`;
 }
 
-async function seedSupplier({ identifier, name, bank, account, cci, currency, admin }) {
+async function seedSupplier({ key, identifier, name, bank, account, cci, currency, address, supplierType, admin, previousAccount }) {
   const supplier = await upsert(Supplier, { rucDni: identifier }, {
-    identifierType: "RUC",
+    identifierType: identifier.length === 8 ? "DNI" : "RUC",
     normalizedIdentifier: identifier,
     legalName: name,
     name,
-    taxAddress: "Lima, Peru",
-    fiscalAddress: "Lima, Peru",
-    legalRepresentative: "Development Representative",
-    email: `demo-${bank.toLowerCase()}@supplier.local`,
-    phone: "999999999",
-    supplierType: "Development Demo",
+    taxAddress: address,
+    fiscalAddress: address,
+    legalRepresentative: "Representante autorizado (Demo)",
+    contactName: "Contacto de compras (Demo)",
+    email: `proveedor.${key.toLowerCase()}@example.test`,
+    phone: "900000000",
+    supplierType,
     currency,
     bankName: bank,
     bankAccount: account,
@@ -130,83 +377,374 @@ async function seedSupplier({ identifier, name, bank, account, cci, currency, ad
     homologationStatus: "HOMOLOGATED",
     active: true,
     status: "ACTIVE",
-    compliance: { taxpayerActive: true, compliant: true, validatedAt: now, validatedBy: admin._id, comments: "Development seed only." },
+    compliance: {
+      taxpayerActive: true,
+      compliant: true,
+      validatedAt: now,
+      validatedBy: admin._id,
+      comments: "Validación manual DEMO. No representa una consulta de producción a SUNAT."
+    },
     reviewedBy: admin._id,
     reviewedAt: now,
-    reviewComments: "Development seed only. No SUNAT production validation claimed."
+    reviewComments: "Proveedor ficticio homologado para demostración UMA."
   });
-  const documentKinds = [["RUC_FILE", "ruc.pdf"], ["BANK_CERTIFICATE", "bank-certificate.pdf"], ["LEGAL_REP_ID", "representative-id.pdf"]];
+
   if (!supplier.documents?.length) {
-    for (const [kind, fileName] of documentKinds) {
-      const file = await ensureEvidence("suppliers", supplier._id, fileName, minimalPdf(`${name} ${kind}`));
+    for (const [kind, fileName] of [
+      ["RUC_FILE", "ficha-ruc-demo.pdf"],
+      ["BANK_CERTIFICATE", "constancia-bancaria-demo.pdf"],
+      ["LEGAL_REP_ID", "identidad-representante-demo.pdf"]
+    ]) {
+      const file = await ensureEvidence("suppliers", supplier._id, fileName, minimalPdf(`${name} - ${kind}`));
       supplier.documents.push({ kind, ...file, uploadedBy: admin._id });
     }
-    await supplier.save();
   }
-  const bankAccount = await upsert(SupplierBankAccount, { supplier: supplier._id, bank, currency, active: true }, { accountNumber: account, cci, validFrom: now, active: true, createdBy: admin._id, changedBy: admin._id });
+
+  if (previousAccount) {
+    await upsert(SupplierBankAccount, {
+      supplier: supplier._id,
+      bank,
+      currency,
+      accountNumber: previousAccount.account
+    }, {
+      cci: previousAccount.cci,
+      active: false,
+      validFrom: previousMonthDate,
+      validTo: now,
+      createdBy: admin._id,
+      changedBy: admin._id
+    });
+    if (!(supplier.bankHistory || []).some((item) => item.bankAccount === previousAccount.account)) {
+      supplier.bankHistory.push({
+        bankName: bank,
+        currency,
+        bankAccount: previousAccount.account,
+        cci: previousAccount.cci,
+        status: "INACTIVE",
+        validFrom: previousMonthDate,
+        validTo: now,
+        createdBy: admin._id,
+        changedBy: admin._id
+      });
+    }
+  }
+
+  const bankAccount = await upsert(SupplierBankAccount, {
+    supplier: supplier._id,
+    bank,
+    currency,
+    accountNumber: account
+  }, {
+    cci,
+    validFrom: now,
+    active: true,
+    createdBy: admin._id,
+    changedBy: admin._id
+  });
   if (!(supplier.bankHistory || []).some((item) => item.status === "ACTIVE" && item.bankAccount === account)) {
-    supplier.bankHistory.push({ bankName: bank, currency, bankAccount: account, cci, status: "ACTIVE", validFrom: now, createdBy: admin._id, changedBy: admin._id });
-    await supplier.save();
+    supplier.bankHistory.push({
+      bankName: bank,
+      currency,
+      bankAccount: account,
+      cci,
+      status: "ACTIVE",
+      validFrom: now,
+      createdBy: admin._id,
+      changedBy: admin._id
+    });
   }
+  await supplier.save();
   return { supplier, bankAccount };
 }
 
 async function seedSuppliers(admin) {
   const definitions = [
-    ["20123456789", "BCP Demo Supplier SAC", "BCP", "1911234567012", "00219100123456701234"],
-    ["20123456780", "BBVA Demo Supplier SAC", "BBVA", "001101234567890123", "01100101234567890123"],
-    ["20123456771", "Interbank Demo Supplier SAC", "INTERBANK", "200555111222", "00320000555111222001"],
-    ["20123456762", "Scotiabank Demo Supplier SAC", "SCOTIABANK", "0001234567890", "00900000123456789012"]
+    {
+      key: "health",
+      identifier: "20609999111",
+      name: "Diagnóstico Académico Andino S.A.C. (Demo)",
+      bank: "BCP",
+      account: "1912345678901",
+      cci: "00219101234567890123",
+      currency: "PEN",
+      address: "San Juan de Lurigancho, Lima (domicilio ficticio)",
+      supplierType: "Equipos e insumos biomédicos"
+    },
+    {
+      key: "pharmacy",
+      identifier: "20609999226",
+      name: "Reactivos Universitarios del Pacífico S.A.C. (Demo)",
+      bank: "BBVA",
+      account: "001101234567890123",
+      cci: "01100101234567890123",
+      currency: "PEN",
+      address: "Ate, Lima (domicilio ficticio)",
+      supplierType: "Reactivos y material farmacéutico",
+      previousAccount: { account: "001109876543210987", cci: "01100109876543210987" }
+    },
+    {
+      key: "engineering",
+      identifier: "20609999331",
+      name: "Tecnología de Laboratorios Digitales S.A.C. (Demo)",
+      bank: "INTERBANK",
+      account: "2003001234567",
+      cci: "00320000300123456789",
+      currency: "USD",
+      address: "Santiago de Surco, Lima (domicilio ficticio)",
+      supplierType: "Tecnología y equipamiento educativo"
+    },
+    {
+      key: "services",
+      identifier: "20609999447",
+      name: "Servicios Generales Canto Bello S.R.L. (Demo)",
+      bank: "SCOTIABANK",
+      account: "0001234567890",
+      cci: "00900000123456789012",
+      currency: "PEN",
+      address: "San Juan de Lurigancho, Lima (domicilio ficticio)",
+      supplierType: "Mantenimiento e infraestructura"
+    },
+    {
+      key: "beneficiary",
+      identifier: "11111111",
+      name: "Beneficiario interno UMA (Demo)",
+      bank: "BCP",
+      account: "1940000000001",
+      cci: "00219400000000000001",
+      currency: "PEN",
+      address: "Lima, Perú (persona ficticia)",
+      supplierType: "Persona natural / beneficiario de rendición"
+    }
   ];
   const result = {};
-  for (const [identifier, name, bank, account, cci] of definitions) result[bank] = await seedSupplier({ identifier, name, bank, account, cci, currency: "PEN", admin });
-  const usd = await seedSupplier({ identifier: "20123456753", name: "USD CAPEX Supplier SAC", bank: "BCP", account: "1917654321012", cci: "00219100765432101234", currency: "USD", admin });
-  result.USD = usd;
+  for (const definition of definitions) {
+    result[definition.key] = await seedSupplier({ ...definition, admin });
+  }
+
+  result.pending = {
+    supplier: await upsert(Supplier, { rucDni: "20609999668" }, {
+      identifierType: "RUC",
+      normalizedIdentifier: "20609999668",
+      legalName: "Mobiliario Académico Lima S.A.C. (Demo)",
+      name: "Mobiliario Académico Lima S.A.C. (Demo)",
+      taxAddress: "Lima, Perú (domicilio ficticio)",
+      fiscalAddress: "Lima, Perú (domicilio ficticio)",
+      email: "proveedor.pendiente@example.test",
+      phone: "900000000",
+      supplierType: "Mobiliario educativo",
+      currency: "PEN",
+      taxpayerStatus: "PENDING",
+      complianceStatus: "PENDING",
+      homologationStatus: "PENDING_VALIDATION",
+      active: false,
+      status: "PENDING_VALIDATION",
+      reviewComments: "Pendiente de ficha RUC, certificado bancario y revisión de Contabilidad."
+    })
+  };
   return result;
 }
 
 async function seedPeriodsAndRates(admin) {
-  await upsert(AccountingPeriod, { period: currentPeriod }, { status: "OPEN", openedAt: now, openedBy: admin._id, comments: "Development seed period", history: [{ action: "CREATED", at: now, by: admin._id, comments: "Development seed period" }] });
-  await upsert(AccountingPeriod, { period: closedPeriod }, { status: "CLOSED", openedAt: previousMonthDate, openedBy: admin._id, closedAt: now, closingDate: now, closedBy: admin._id, comments: "Closed-period control scenario", history: [{ action: "CREATED", at: previousMonthDate, by: admin._id }, { action: "CLOSED", at: now, by: admin._id, comments: "Closed-period control scenario" }] });
-  await upsert(ExchangeRate, { currency: "USD", date: new Date(`${currentDate}T00:00:00.000Z`) }, { quoteCurrency: "PEN", period: currentPeriod, rate: 3.75, source: "MANUAL", sourceLabel: "Development-authorized manual selling rate", providerMode: "MANUAL", authoritative: false, active: true, createdBy: admin._id });
+  await upsert(AccountingPeriod, { period: currentPeriod }, {
+    status: "OPEN",
+    openedAt: now,
+    openedBy: admin._id,
+    comments: "Periodo abierto para la demostración integral UMA.",
+    history: [{ action: "CREATED", at: now, by: admin._id, comments: "Periodo demo UMA." }]
+  });
+  await upsert(AccountingPeriod, { period: closedPeriod }, {
+    status: "CLOSED",
+    openedAt: previousMonthDate,
+    openedBy: admin._id,
+    closedAt: now,
+    closingDate: now,
+    closedBy: admin._id,
+    comments: "Periodo cerrado para demostrar el bloqueo contable.",
+    history: [
+      { action: "CREATED", at: previousMonthDate, by: admin._id },
+      { action: "CLOSED", at: now, by: admin._id, comments: "Cierre mensual demo UMA." }
+    ]
+  });
+  await upsert(ExchangeRate, {
+    currency: "USD",
+    date: new Date(`${currentDate}T00:00:00.000Z`)
+  }, {
+    quoteCurrency: "PEN",
+    period: currentPeriod,
+    rate: manualUsdRate,
+    source: "MANUAL",
+    sourceLabel: "Tasa de venta manual DEMO; no validada contra SUNAT",
+    providerMode: "MANUAL",
+    authoritative: false,
+    active: true,
+    createdBy: admin._id
+  });
 }
 
 async function seedRulesAndMappings({ costCenters, expenseTypes }) {
-  const approvals = [
-    ["APR-OPS-DIR", "Operations Area Director", APPROVAL_STAGES.AREA_DIRECTOR, ROLES.APPROVER, "Operations", 1],
-    ["APR-OPS-VR", "Operations Vice Rector", APPROVAL_STAGES.VICE_RECTOR, ROLES.APPROVER, "Operations", 2]
-  ];
-  for (const [_code, name, approvalLevel, role, area, sequence] of approvals) await upsert(ApprovalRule, { name }, { approvalLevel, role, area, amountFrom: 0, requestType: "*", required: true, sequence, slaHours: 24, active: true });
+  for (const area of [AREAS.HEALTH, AREAS.PHARMACY, AREAS.ENGINEERING]) {
+    await upsert(ApprovalRule, { name: `Dirección de Área - ${area}` }, {
+      approvalLevel: APPROVAL_STAGES.AREA_DIRECTOR,
+      role: ROLES.APPROVER,
+      area,
+      amountFrom: 0,
+      requestType: "*",
+      required: true,
+      sequence: 1,
+      slaHours: 24,
+      active: true
+    });
+  }
+  await upsert(ApprovalRule, { name: "Vicerrectorado - ruta institucional UMA" }, {
+    approvalLevel: APPROVAL_STAGES.VICE_RECTOR,
+    role: ROLES.APPROVER,
+    area: "*",
+    amountFrom: 0,
+    requestType: "*",
+    required: true,
+    sequence: 2,
+    slaHours: 24,
+    active: true
+  });
+  await upsert(ApprovalRule, { name: "Rectorado - CAPEX mayor a PEN 100,000" }, {
+    approvalLevel: APPROVAL_STAGES.RECTORATE,
+    role: ROLES.MANAGEMENT,
+    area: "*",
+    amountFrom: 100000,
+    requestType: REQUEST_TYPE.CAPEX,
+    required: true,
+    sequence: 3,
+    slaHours: 36,
+    active: true
+  });
 
   const documentRules = [
-    ["DOC-PAGO-COT", REQUEST_TYPE.PAGO_CON_COTIZACION, "*", [{ kind: "XML", minCount: 1, labelKey: "invoice XML" }, { kind: "PDF", minCount: 1, labelKey: "invoice PDF" }]],
-    ["DOC-REEM-SUST", REQUEST_TYPE.REEMBOLSO_CON_SUSTENTO, "*", [{ kind: "XML", minCount: 1, labelKey: "invoice XML" }, { kind: "PDF", minCount: 1, labelKey: "invoice PDF" }]],
-    ["DOC-GOODS", "*", EXPENSE_NATURE.GOODS, [{ kind: "QUOTATION", minCount: 3, labelKey: "three quotations" }, { kind: "PDF", minCount: 1, labelKey: "invoice or voucher" }]],
-    ["DOC-SERVICES", "*", EXPENSE_NATURE.SERVICES, [{ kind: "PDF", minCount: 1, labelKey: "electronic invoice" }, { kind: "CONTRACT", minCount: 1, labelKey: "signed contract" }, { kind: "CONFORMITY", minCount: 1, labelKey: "service conformity" }]],
-    ["DOC-PETTY", "*", EXPENSE_NATURE.PETTY_CASH, [{ kind: "SUPPORTING", minCount: 1, labelKey: "supporting receipts" }]],
-    ["DOC-REIMB", "*", EXPENSE_NATURE.REIMBURSEMENT_LIQUIDATION, [{ kind: "SUPPORTING", minCount: 1, labelKey: "validated evidence" }]]
+    ["DOC-UMA-COTIZACION", REQUEST_TYPE.PAGO_CON_COTIZACION, "*", [
+      { kind: "XML", minCount: 1, labelKey: "XML de comprobante" },
+      { kind: "PDF", minCount: 1, labelKey: "PDF de comprobante" }
+    ]],
+    ["DOC-UMA-REEMBOLSO", REQUEST_TYPE.REEMBOLSO_CON_SUSTENTO, "*", [
+      { kind: "XML", minCount: 1, labelKey: "XML de comprobante" },
+      { kind: "PDF", minCount: 1, labelKey: "PDF de comprobante" }
+    ]],
+    ["DOC-UMA-BIENES", "*", EXPENSE_NATURE.GOODS, [
+      { kind: "QUOTATION", minCount: 3, labelKey: "tres cotizaciones" },
+      { kind: "PDF", minCount: 1, labelKey: "factura o comprobante" }
+    ]],
+    ["DOC-UMA-SERVICIOS", "*", EXPENSE_NATURE.SERVICES, [
+      { kind: "PDF", minCount: 1, labelKey: "comprobante electrónico" },
+      { kind: "CONTRACT", minCount: 1, labelKey: "contrato firmado" },
+      { kind: "CONFORMITY", minCount: 1, labelKey: "conformidad del servicio" }
+    ]],
+    ["DOC-UMA-MANTENIMIENTO", "*", EXPENSE_NATURE.MAINTENANCE, [
+      { kind: "PDF", minCount: 1, labelKey: "comprobante" },
+      { kind: "CONTRACT", minCount: 1, labelKey: "orden o contrato" },
+      { kind: "CONFORMITY", minCount: 1, labelKey: "conformidad de mantenimiento" }
+    ]],
+    ["DOC-UMA-VIAJE", "*", EXPENSE_NATURE.TRAVEL, [
+      { kind: "SUPPORTING", minCount: 1, labelKey: "sustento de viaje o movilidad" }
+    ]],
+    ["DOC-UMA-CAJA", "*", EXPENSE_NATURE.PETTY_CASH, [
+      { kind: "SUPPORTING", minCount: 1, labelKey: "comprobantes de sustento" }
+    ]],
+    ["DOC-UMA-LIQUIDACION", "*", EXPENSE_NATURE.REIMBURSEMENT_LIQUIDATION, [
+      { kind: "SUPPORTING", minCount: 1, labelKey: "evidencia validada" }
+    ]]
   ];
-  for (const [code, requestType, expenseNature, requirements] of documentRules) await upsert(DocumentRule, { code }, { requestType, expenseNature, requirements, active: true });
+  for (const [code, requestType, expenseNature, requirements] of documentRules) {
+    await upsert(DocumentRule, { code }, { requestType, expenseNature, requirements, active: true });
+  }
 
   const mappings = [
-    ["MAP-AP", "Accounts Payable", "ACCOUNTS_PAYABLE", "*", "*", "*", "*", "421201"],
-    ["MAP-IGV", "Recoverable IGV", "IGV", "*", "*", "*", "*", "401111"],
-    ["MAP-ADV", "Advance transit / Account 14", "ADVANCE_TRANSIT", REQUEST_TYPE.ENTREGA_RENDIR, "*", "*", "*", "141301"],
-    ["MAP-RETURN", "Returned advance receivable", "RETURN_RECEIVABLE", REQUEST_TYPE.ENTREGA_RENDIR, "*", "*", "*", "101199"]
+    ["MAP-UMA-CXP", "Cuentas por pagar comerciales", "ACCOUNTS_PAYABLE", "*", "*", "*", "*", "421201"],
+    ["MAP-UMA-IGV", "IGV crédito fiscal", "IGV", "*", "*", "*", "*", "401111"],
+    ["MAP-UMA-ENTREGA", "Entregas a rendir - Cuenta 14", "ADVANCE_TRANSIT", REQUEST_TYPE.ENTREGA_RENDIR, "*", "*", "*", "141301"],
+    ["MAP-UMA-DEVOLUCION", "Devolución de entrega a rendir", "RETURN_RECEIVABLE", REQUEST_TYPE.ENTREGA_RENDIR, "*", "*", "*", "101199"]
   ];
-  for (const [code, name, purpose, requestType, expenseNature, bank, currency, accountNumber] of mappings) await upsert(AccountingMapping, { code }, { name, purpose, requestType, expenseNature, bank, currency, accountNumber, active: true });
-  const bankAccounts = { BCP: "104101", BBVA: "104102", INTERBANK: "104103", SCOTIABANK: "104104" };
-  for (const [bank, accountNumber] of Object.entries(bankAccounts)) {
+  for (const [code, name, purpose, requestType, expenseNature, bank, currency, accountNumber] of mappings) {
+    await upsert(AccountingMapping, { code }, {
+      name,
+      purpose,
+      requestType,
+      expenseNature,
+      bank,
+      currency,
+      accountNumber,
+      active: true
+    });
+  }
+  for (const [bank, accountNumber] of Object.entries({
+    BCP: "104101",
+    BBVA: "104102",
+    INTERBANK: "104103",
+    SCOTIABANK: "104104"
+  })) {
     for (const currency of ["PEN", "USD"]) {
-      await upsert(AccountingMapping, { code: `MAP-BANK-${bank}-${currency}` }, { name: `${bank} ${currency} bank account`, purpose: "BANK", requestType: "*", expenseNature: "*", bank, currency, accountNumber, active: true });
-      await upsert(BankFormatConfiguration, { bank, currency }, { mode: "DEMO", specificationVersion: "UMA-DEMO-1", certified: false, notes: "DEMO / NOT CERTIFIED. Replace only after UMA supplies an approved specification.", active: true });
+      await upsert(AccountingMapping, { code: `MAP-UMA-BANCO-${bank}-${currency}` }, {
+        name: `Cuenta bancaria UMA ${bank} ${currency}`,
+        purpose: "BANK",
+        requestType: "*",
+        expenseNature: "*",
+        bank,
+        currency,
+        accountNumber,
+        active: true
+      });
+      await upsert(BankFormatConfiguration, { bank, currency }, {
+        mode: "DEMO",
+        specificationVersion: "UMA-DEMO-2026-1",
+        certified: false,
+        notes: "DEMO / NO CERTIFICADO. Requiere el layout oficial aprobado por UMA y el banco.",
+        active: true
+      });
     }
   }
-  await upsert(BudgetRule, { name: "Operations active budget" }, { mode: "ACTIVE", exceptionStrategy: "REJECT", costCenter: costCenters.operations._id, expenseType: expenseTypes.service._id, project: "*", active: true });
-  await upsert(BudgetRule, { name: "Research extraordinary budget" }, { mode: "ACTIVE", exceptionStrategy: "EXTRAORDINARY_APPROVAL", costCenter: costCenters.research._id, expenseType: expenseTypes.capex._id, project: "*", active: true });
-  await upsert(BudgetAllocation, { period: currentPeriod, costCenter: costCenters.operations._id, expenseType: expenseTypes.service._id, project: "" }, { assignedAmount: 300000, active: true });
-  await upsert(BudgetAllocation, { period: currentPeriod, costCenter: costCenters.research._id, expenseType: expenseTypes.capex._id, project: "" }, { assignedAmount: 50, active: true });
-  await upsert(Project, { code: "PRJ-DIGITAL-01" }, { name: "Digital Modernization", description: "Development CAPEX scenario", costCenter: costCenters.research._id, active: true });
+
+  const budgetDimensions = [
+    ["Presupuesto Salud - suministros", costCenters.health, expenseTypes.laboratorySupplies, "", 360000, "REJECT"],
+    ["Presupuesto Salud - servicios", costCenters.health, expenseTypes.professionalServices, "", 220000, "REJECT"],
+    ["Presupuesto Salud - mantenimiento", costCenters.health, expenseTypes.maintenance, "", 180000, "REJECT"],
+    ["Presupuesto Salud - viajes", costCenters.health, expenseTypes.travel, "", 20000, "REJECT"],
+    ["Presupuesto Salud - no deducible", costCenters.health, expenseTypes.nonDeductible, "", 10000, "REJECT"],
+    ["Presupuesto Farmacia - reactivos", costCenters.pharmacy, expenseTypes.laboratorySupplies, "", 320000, "REJECT"],
+    ["Presupuesto Farmacia - servicios", costCenters.pharmacy, expenseTypes.professionalServices, "", 160000, "REJECT"],
+    ["Presupuesto Ingeniería - tecnología", costCenters.engineering, expenseTypes.technologyAssets, "PRJ-CAMPUS-DIGITAL-2026", 850000, "REJECT"],
+    ["Presupuesto Ingeniería - servicios", costCenters.engineering, expenseTypes.professionalServices, "", 150000, "REJECT"],
+    ["Presupuesto Investigación - equipos", costCenters.research, expenseTypes.laboratoryAssets, "PRJ-INV-BIOMED-2026", 1000, "EXTRAORDINARY_APPROVAL"],
+    ["Presupuesto Finanzas - servicios", costCenters.finance, expenseTypes.professionalServices, "", 220000, "REJECT"]
+  ];
+  for (const [name, costCenter, expenseType, project, assignedAmount, exceptionStrategy] of budgetDimensions) {
+    await upsert(BudgetRule, { name }, {
+      mode: "ACTIVE",
+      exceptionStrategy,
+      costCenter: costCenter._id,
+      expenseType: expenseType._id,
+      project: project || "*",
+      active: true
+    });
+    await upsert(BudgetAllocation, {
+      period: currentPeriod,
+      costCenter: costCenter._id,
+      expenseType: expenseType._id,
+      project
+    }, {
+      assignedAmount,
+      active: true
+    });
+  }
+
+  await upsert(Project, { code: "PRJ-CAMPUS-DIGITAL-2026" }, {
+    name: "Campus Digital UMA 2026",
+    description: "Renovación de laboratorios de cómputo y simulación académica.",
+    costCenter: costCenters.engineering._id,
+    active: true
+  });
+  await upsert(Project, { code: "PRJ-INV-BIOMED-2026" }, {
+    name: "Investigación Biomédica UMA 2026",
+    description: "Equipamiento científico sujeto a excepción presupuestal.",
+    costCenter: costCenters.research._id,
+    active: true
+  });
 }
 
 async function addAttachment(request, kind, fileName, content, user) {
@@ -214,10 +752,70 @@ async function addAttachment(request, kind, fileName, content, user) {
   request.attachments.push({ kind, ...file, uploadedBy: user._id });
 }
 
-async function seedRequest({ key, number, requestType, expenseNature, currency = "PEN", supplier, requester, costCenter, expenseType, description, status = REQUEST_STATUS.DRAFT, net = 100, igv = 18, total = 118, period = currentPeriod }) {
-  let request = await FinancialRequest.findOne({ developmentScenarioKey: key });
-  if (request) return request;
-  request = new FinancialRequest({
+async function addEvidenceProfile(request, profile, supplier, user, voucherNumber) {
+  if (profile === "GOODS_XML") {
+    for (let index = 1; index <= 3; index += 1) {
+      await addAttachment(request, "QUOTATION", `cotizacion-${index}-${request.requestNumber}.pdf`, minimalPdf(`Cotización ${index} - ${request.requestNumber}`), user);
+    }
+    await addAttachment(request, "PDF", `factura-${request.requestNumber}.pdf`, minimalPdf(`Factura ${voucherNumber}`), user);
+    await addAttachment(request, "XML", `factura-${request.requestNumber}.xml`, invoiceXml({
+      supplier,
+      number: voucherNumber,
+      date: currentDate,
+      currency: request.currency,
+      net: request.lines[0].netAmount,
+      igv: request.lines[0].igvAmount,
+      total: request.lines[0].totalAmount
+    }), user);
+  } else if (profile === "SERVICE" || profile === "MAINTENANCE") {
+    await addAttachment(request, "PDF", `comprobante-${request.requestNumber}.pdf`, minimalPdf(`Comprobante - ${request.requestNumber}`), user);
+    await addAttachment(request, "CONTRACT", `contrato-${request.requestNumber}.pdf`, minimalPdf(`Contrato - ${request.requestNumber}`), user);
+    await addAttachment(request, "CONFORMITY", `conformidad-${request.requestNumber}.pdf`, minimalPdf(`Conformidad - ${request.requestNumber}`), user);
+  } else if (profile === "SUPPORTED_XML") {
+    await addAttachment(request, "PDF", `reembolso-${request.requestNumber}.pdf`, minimalPdf(`Reembolso sustentado - ${request.requestNumber}`), user);
+    await addAttachment(request, "XML", `reembolso-${request.requestNumber}.xml`, invoiceXml({
+      supplier,
+      number: voucherNumber,
+      date: currentDate,
+      currency: request.currency,
+      net: request.lines[0].netAmount,
+      igv: request.lines[0].igvAmount,
+      total: request.lines[0].totalAmount
+    }), user);
+  } else if (profile === "CAPEX") {
+    for (let index = 1; index <= 3; index += 1) {
+      await addAttachment(request, "QUOTATION", `propuesta-capex-${index}-${request.requestNumber}.pdf`, minimalPdf(`Propuesta CAPEX ${index} - ${request.requestNumber}`), user);
+    }
+    await addAttachment(request, "PDF", `ficha-tecnica-${request.requestNumber}.pdf`, minimalPdf(`Ficha técnica - ${request.requestNumber}`), user);
+  } else if (profile === "SUPPORTING") {
+    await addAttachment(request, "SUPPORTING", `sustento-${request.requestNumber}.pdf`, minimalPdf(`Sustento - ${request.requestNumber}`), user);
+  }
+}
+
+async function seedRequest({
+  key,
+  number,
+  requester,
+  supplier,
+  costCenter,
+  expenseType,
+  requestType,
+  expenseNature,
+  description,
+  net,
+  igv,
+  total,
+  currency = "PEN",
+  project = "",
+  priority = "MEDIA",
+  evidence = "SUPPORTING",
+  voucherNumber = `FDEM-${number.slice(-5)}`,
+  period = currentPeriod
+}) {
+  const existing = await FinancialRequest.findOne({ developmentScenarioKey: key });
+  if (existing) return existing;
+  const exchangeRate = currency === "USD" ? manualUsdRate : 1;
+  const request = new FinancialRequest({
     developmentScenarioKey: key,
     requestNumber: number,
     issueDate: new Date(`${period === currentPeriod ? currentDate : `${period}-01`}T00:00:00.000Z`),
@@ -226,157 +824,706 @@ async function seedRequest({ key, number, requestType, expenseNature, currency =
     solicitor: requester._id,
     requesterArea: requester.area,
     requestingArea: requester.area,
-    requesterCostCenter: requester.costCenter,
+    requesterCostCenter: costCenter._id,
     schoolOrDepartment: requester.area,
     requestType,
     expenseNature,
-    priority: "MEDIA",
-    project: requestType === REQUEST_TYPE.CAPEX ? "PRJ-DIGITAL-01" : "",
+    priority,
+    project,
     currency,
-    exchangeRate: currency === "USD" ? 3.75 : 1,
+    exchangeRate,
     exchangeRateDate: new Date(`${currentDate}T00:00:00.000Z`),
-    exchangeRateSource: currency === "USD" ? "Development-authorized manual selling rate" : "PEN",
+    exchangeRateSource: currency === "USD" ? "Tasa manual DEMO; no validada contra SUNAT" : "PEN",
     supplier: supplier._id,
-    supplierSnapshot: { identifierType: supplier.identifierType, identifier: supplier.normalizedIdentifier, legalName: supplier.legalName, homologationStatus: supplier.homologationStatus },
-    status,
+    supplierSnapshot: {
+      identifierType: supplier.identifierType,
+      identifier: supplier.normalizedIdentifier,
+      legalName: supplier.legalName,
+      homologationStatus: supplier.homologationStatus
+    },
     description,
-    lines: [{ costCenter: costCenter._id, expenseType: expenseType._id, netAmount: net, igvAmount: igv, totalAmount: total, currency, exchangeRate: currency === "USD" ? 3.75 : 1 }],
+    lines: [{
+      costCenter: costCenter._id,
+      expenseType: expenseType._id,
+      projectId: project,
+      netAmount: net,
+      igvAmount: igv,
+      totalAmount: total,
+      currency,
+      exchangeRate
+    }],
     draftSavedAt: now
   });
+  if (evidence !== "NONE") await addEvidenceProfile(request, evidence, supplier, requester, voucherNumber);
+  request.approvalHistory.push(workflowEvent({
+    action: "CREATED",
+    to: REQUEST_STATUS.DRAFT,
+    user: requester,
+    req: fakeReq,
+    comments: "Solicitud de demostración UMA creada.",
+    request
+  }));
   await request.save();
+  await recordAudit({
+    entityType: "FinancialRequest",
+    entity: request,
+    requestId: request._id,
+    action: "CREATED",
+    user: requester,
+    req: fakeReq,
+    module: "REQUESTS",
+    newValues: { status: request.status, developmentScenarioKey: key }
+  });
   return request;
 }
 
-async function addPettyEvidence(request, user) {
-  if (!(request.attachments || []).some((item) => item.kind === "SUPPORTING")) {
-    await addAttachment(request, "SUPPORTING", "supporting-receipt.pdf", minimalPdf(request.requestNumber), user);
-    await request.save();
-  }
+async function refresh(request) {
+  return FinancialRequest.findById(request._id);
 }
 
-async function ensureCommitment(request, user) {
-  let commitment = await BudgetCommitment.findOne({ request: request._id });
-  if (!commitment) {
-    commitment = await BudgetCommitment.create({
-      request: request._id,
-      requestNumber: request.requestNumber,
-      period: request.accountingPeriod,
-      lines: request.lines.map((line) => ({ costCenter: line.costCenter, expenseType: line.expenseType, amount: line.penEquivalent || line.totalAmount, mode: "TRANSITIONAL", exceptionStrategy: "REJECT" })),
-      totalAmount: request.totalPENEquivalent,
-      status: BUDGET_STATUS.NO_BUDGET,
-      createdBy: user._id,
-      reservedAt: now,
-      history: [{ status: BUDGET_STATUS.NO_BUDGET, amount: request.totalPENEquivalent, by: user._id, comments: "Development workflow scenario." }]
+async function submitIfDraft(request, users) {
+  let current = await refresh(request);
+  if (current.status === REQUEST_STATUS.DRAFT) {
+    await submitFinancialRequest({
+      id: current._id,
+      user: users,
+      req: fakeReq,
+      comments: "Enviada para el circuito de aprobación UMA."
     });
+    current = await refresh(current);
   }
-  request.budgetCommitment = commitment._id;
-  await request.save();
-  return commitment;
+  return current;
 }
 
-async function seedDraftScenarios(context) {
-  const { users, suppliers, costCenters, expenseTypes } = context;
-  const solicitor = users[ROLES.SOLICITOR];
-  const standard = await seedRequest({ key: "A_STANDARD_PEN_OPEX", number: "SOL-2026-10001", requestType: REQUEST_TYPE.OPEX, expenseNature: EXPENSE_NATURE.PETTY_CASH, supplier: suppliers.BCP.supplier, requester: solicitor, costCenter: costCenters.operations, expenseType: expenseTypes.service, description: "A. Standard PEN OPEX end-to-end scenario" });
-  await addPettyEvidence(standard, solicitor);
-
-  await seedRequest({ key: "B_USD_CAPEX", number: "SOL-2026-10002", requestType: REQUEST_TYPE.CAPEX, expenseNature: EXPENSE_NATURE.EQUIPMENT, currency: "USD", supplier: suppliers.USD.supplier, requester: solicitor, costCenter: costCenters.research, expenseType: expenseTypes.capex, description: "B. USD CAPEX with exact-date exchange rate", net: 1000, igv: 180, total: 1180 });
-
-  const goods = await seedRequest({ key: "C_GOODS_PO", number: "SOL-2026-10003", requestType: REQUEST_TYPE.PAGO_CON_COTIZACION, expenseNature: EXPENSE_NATURE.GOODS, supplier: suppliers.BBVA.supplier, requester: solicitor, costCenter: costCenters.operations, expenseType: expenseTypes.service, description: "C. Goods purchase with quotations and purchase-order branch" });
-  if (!(goods.attachments || []).length) {
-    for (let index = 1; index <= 3; index += 1) await addAttachment(goods, "QUOTATION", `quotation-${index}.pdf`, minimalPdf(`Quotation ${index}`), solicitor);
-    await addAttachment(goods, "PDF", "invoice.pdf", minimalPdf("Invoice"), solicitor);
-    await addAttachment(goods, "XML", "invoice.xml", invoiceXml({ ruc: suppliers.BBVA.supplier.rucDni, number: "F001-10003", date: currentDate }), solicitor);
-    goods.xmlValidation = { status: "VALID", validated: true, validatedAt: now, supplierMatch: true, documentNumberMatch: null, dateMatch: true, netMatch: true, igvMatch: true, totalMatch: true, errors: [], data: { ruc: suppliers.BBVA.supplier.rucDni, invoiceNumber: "F001-10003", issueDate: currentDate, currency: "PEN", netAmount: 100, igvAmount: 18, totalAmount: 118 } };
-    await goods.save();
-  }
-
-  const supported = await seedRequest({ key: "D_SUPPORTED_REIMBURSEMENT", number: "SOL-2026-10004", requestType: REQUEST_TYPE.REEMBOLSO_CON_SUSTENTO, expenseNature: EXPENSE_NATURE.ADVERTISING, supplier: suppliers.INTERBANK.supplier, requester: solicitor, costCenter: costCenters.operations, expenseType: expenseTypes.service, description: "D. Supported reimbursement with XML and PDF" });
-  if (!(supported.attachments || []).length) {
-    await addAttachment(supported, "PDF", "supported-reimbursement.pdf", minimalPdf("Supported reimbursement"), solicitor);
-    await addAttachment(supported, "XML", "supported-reimbursement.xml", invoiceXml({ ruc: suppliers.INTERBANK.supplier.rucDni, number: "F001-10004", date: currentDate }), solicitor);
-    supported.xmlValidation = { status: "VALID", validated: true, validatedAt: now, supplierMatch: true, documentNumberMatch: null, dateMatch: true, netMatch: true, igvMatch: true, totalMatch: true, errors: [], data: { ruc: suppliers.INTERBANK.supplier.rucDni, invoiceNumber: "F001-10004", issueDate: currentDate, currency: "PEN", netAmount: 100, igvAmount: 18, totalAmount: 118 } };
-    await supported.save();
-  }
-
-  const unsupported = await seedRequest({ key: "E_UNSUPPORTED_REIMBURSEMENT", number: "SOL-2026-10005", requestType: REQUEST_TYPE.REEMBOLSO_SIN_SUSTENTO, expenseNature: EXPENSE_NATURE.REIMBURSEMENT_LIQUIDATION, supplier: suppliers.SCOTIABANK.supplier, requester: solicitor, costCenter: costCenters.operations, expenseType: expenseTypes.nonDeductible, description: "E. Unsupported reimbursement using configured non-deductible account", net: 118, igv: 0, total: 118 });
-  await addPettyEvidence(unsupported, solicitor);
-
-  const closed = await seedRequest({ key: "I_CLOSED_PERIOD", number: "SOL-2026-10009", requestType: REQUEST_TYPE.OPEX, expenseNature: EXPENSE_NATURE.PETTY_CASH, supplier: suppliers.BCP.supplier, requester: solicitor, costCenter: costCenters.operations, expenseType: expenseTypes.service, description: "I. Closed accounting-period control scenario", period: closedPeriod });
-  await addPettyEvidence(closed, solicitor);
-
-  const insufficient = await seedRequest({ key: "G_INSUFFICIENT_BUDGET", number: "SOL-2026-10007", requestType: REQUEST_TYPE.CAPEX, expenseNature: EXPENSE_NATURE.EQUIPMENT, supplier: suppliers.USD.supplier, requester: solicitor, costCenter: costCenters.research, expenseType: expenseTypes.capex, description: "G. Insufficient budget / extraordinary approval scenario", status: REQUEST_STATUS.VICE_RECTOR_APPROVED, net: 5000, igv: 900, total: 5900 });
-  insufficient.approvalStage = APPROVAL_STAGES.COMPLETE;
-  insufficient.approvalRouteSnapshot = [
-    { approvalLevel: APPROVAL_STAGES.AREA_DIRECTOR, role: ROLES.APPROVER, sequence: 1, slaHours: 24, required: true, status: "APPROVED", completedAt: now, completedBy: users[APPROVAL_STAGES.AREA_DIRECTOR]._id },
-    { approvalLevel: APPROVAL_STAGES.VICE_RECTOR, role: ROLES.APPROVER, sequence: 2, slaHours: 24, required: true, status: "APPROVED", completedAt: now, completedBy: users[APPROVAL_STAGES.VICE_RECTOR]._id }
-  ];
-  await insufficient.save();
-  await upsert(BudgetException, { request: insufficient._id, dimensionKey: `${costCenters.research._id}|${expenseTypes.capex._id}||PRJ-DIGITAL-01` }, { costCenter: costCenters.research._id, expenseType: expenseTypes.capex._id, project: "PRJ-DIGITAL-01", strategy: "EXTRAORDINARY_APPROVAL", availableAmount: 50, requestedAmount: insufficient.totalPENEquivalent, status: "PENDING", requestedBy: users[APPROVAL_STAGES.VICE_RECTOR]._id });
-}
-
-async function seedBankWorkflow(context, bank, index, { confirmAndClose = false } = {}) {
-  const { users, suppliers, costCenters, expenseTypes } = context;
-  const solicitor = users[ROLES.SOLICITOR];
-  const request = await seedRequest({ key: `J_BANK_${bank}`, number: `SOL-2026-${String(10100 + index).padStart(5, "0")}`, requestType: REQUEST_TYPE.OPEX, expenseNature: EXPENSE_NATURE.PETTY_CASH, supplier: suppliers[bank].supplier, requester: solicitor, costCenter: costCenters.administration, expenseType: expenseTypes.service, description: `J. ${bank} demo bank batch scenario`, status: REQUEST_STATUS.BUDGET_COMMITTED });
-  await addPettyEvidence(request, solicitor);
-  await ensureCommitment(request, users[ROLES.BUDGET]);
-  if (request.status === REQUEST_STATUS.BUDGET_COMMITTED) {
-    await processAccountsPayable({
-      requestId: request._id,
-      payload: { documentType: "FACTURA", series: `F${index}01`, number: `BANK-${index}`, documentDate: currentDate, accountingDate: currentDate, fiscalPeriod: currentPeriod, accountNumber: expenseTypes.service.accountNumber, comments: "Development bank scenario" },
-      user: users[ROLES.ACCOUNTING],
+async function approveNext(request, users) {
+  const current = await refresh(request);
+  const stage = current.approvalStage;
+  const actor = stage === APPROVAL_STAGES.AREA_DIRECTOR
+    ? users.directorsByArea[current.requesterArea]
+    : stage === APPROVAL_STAGES.VICE_RECTOR
+      ? users.viceRector
+      : users.management;
+  if (!actor) throw new Error(`No demo approver is configured for ${current.requesterArea} / ${stage}.`);
+  try {
+    await decideApproval({
+      id: current._id,
+      action: "APPROVE",
+      comments: `Aprobación electrónica DEMO - ${stage}.`,
+      user: actor,
+      req: fakeReq
+    });
+  } catch (error) {
+    const rectorateApproved = stage === APPROVAL_STAGES.RECTORATE
+      && error.code === "FORBIDDEN"
+      && error.details?.targetStatus === REQUEST_STATUS.BUDGET_COMMITTED;
+    if (!rectorateApproved) throw error;
+    const approved = await refresh(current);
+    await commitApprovedRequestBudget({
+      request: approved,
+      user: users.budget,
       req: fakeReq
     });
   }
-  const refreshed = await FinancialRequest.findById(request._id);
-  if (refreshed.status === REQUEST_STATUS.ACCOUNTED) {
-    await generatePaymentBatch({ requestIds: [request._id.toString()], bank, currency: "PEN", paymentDate: currentDate, user: users[ROLES.TREASURY], req: fakeReq });
-  }
-  const afterBatch = await FinancialRequest.findById(request._id);
-  if (confirmAndClose && afterBatch.status === REQUEST_STATUS.BANK_FILE_GENERATED) {
-    await confirmTreasuryPayment({ requestId: request._id, payload: { operationNumber: `DEV-${bank}-001`, paidAt: currentDate, confirmedAmount: 118, comments: "Development payment confirmation" }, user: users[ROLES.TREASURY], req: fakeReq });
-  }
-  const afterPayment = await FinancialRequest.findById(request._id);
-  if (confirmAndClose && afterPayment.status === REQUEST_STATUS.PAID) {
-    await reconcilePayment({ requestId: request._id, payload: { bankReference: `STM-${bank}-001`, statementAmount: 118, comments: "Development manual reconciliation" }, user: users[ROLES.TREASURY], req: fakeReq });
-    await closeFinancialRequest({ id: request._id, user: users[ROLES.ACCOUNTING], req: fakeReq, comments: "Development scenario closed after reconciliation." });
-  }
+  return refresh(current);
 }
 
-async function seedAdvanceScenario(context) {
-  const { users, suppliers, costCenters, expenseTypes } = context;
-  const request = await seedRequest({ key: "F_ENTREGA_RENDIR", number: "SOL-2026-10006", requestType: REQUEST_TYPE.ENTREGA_RENDIR, expenseNature: EXPENSE_NATURE.PETTY_CASH, supplier: suppliers.BCP.supplier, requester: users[ROLES.SOLICITOR], costCenter: costCenters.operations, expenseType: expenseTypes.service, description: "F. Entrega a Rendir advance / Account 14 scenario", status: REQUEST_STATUS.BUDGET_COMMITTED });
-  await addPettyEvidence(request, users[ROLES.SOLICITOR]);
-  await ensureCommitment(request, users[ROLES.BUDGET]);
-  if (request.status === REQUEST_STATUS.BUDGET_COMMITTED) {
-    await processAccountsPayable({ requestId: request._id, payload: { documentType: "RECIBO_INTERNO", series: "ADV", number: "10006", documentDate: currentDate, accountingDate: currentDate, fiscalPeriod: currentPeriod, accountNumber: "141301", comments: "Development advance" }, user: users[ROLES.ACCOUNTING], req: fakeReq });
+async function approveUntilComplete(request, users, stopBeforeStage) {
+  let current = await refresh(request);
+  for (let index = 0; index < 5; index += 1) {
+    if (stopBeforeStage && current.approvalStage === stopBeforeStage) return current;
+    if (![REQUEST_STATUS.PENDING_APPROVAL, REQUEST_STATUS.DIRECTOR_APPROVED, REQUEST_STATUS.VICE_RECTOR_APPROVED].includes(current.status)) return current;
+    const pending = (current.approvalRouteSnapshot || []).some((step) => step.required !== false && step.status === "PENDING");
+    if (!pending) return current;
+    current = await approveNext(current, users);
   }
-  const accounted = await FinancialRequest.findById(request._id);
-  if (accounted.status === REQUEST_STATUS.ACCOUNTED) await generatePaymentBatch({ requestIds: [request._id.toString()], bank: "BCP", currency: "PEN", paymentDate: currentDate, user: users[ROLES.TREASURY], req: fakeReq });
-  const generated = await FinancialRequest.findById(request._id);
-  if (generated.status === REQUEST_STATUS.BANK_FILE_GENERATED) await confirmTreasuryPayment({ requestId: request._id, payload: { operationNumber: "DEV-ADV-10006", paidAt: currentDate, confirmedAmount: 118, comments: "Development advance paid" }, user: users[ROLES.TREASURY], req: fakeReq });
+  return current;
+}
+
+function accountingPayload(request, sequence, accountNumber) {
+  return {
+    voucherType: request.requestType === REQUEST_TYPE.ENTREGA_RENDIR ? "RECIBO_INTERNO" : "FACTURA",
+    series: request.requestType === REQUEST_TYPE.ENTREGA_RENDIR ? "ER01" : "F001",
+    number: String(sequence).padStart(8, "0"),
+    documentDate: currentDate,
+    accountingDate: currentDate,
+    fiscalPeriod: currentPeriod,
+    accountNumber,
+    comments: `Validación fiscal y provisión DEMO UMA para ${request.requestNumber}.`
+  };
+}
+
+async function moveToAccounting(request, users, sequence, accountNumber) {
+  let current = await approveUntilComplete(request, users);
+  if ([
+    REQUEST_STATUS.ACCOUNTED,
+    REQUEST_STATUS.SCHEDULED,
+    REQUEST_STATUS.BANK_FILE_GENERATED,
+    REQUEST_STATUS.PAID,
+    REQUEST_STATUS.RENDITION_PENDING,
+    REQUEST_STATUS.RECONCILED,
+    REQUEST_STATUS.CLOSED
+  ].includes(current.status)) return current;
+  const routeComplete = current.status === REQUEST_STATUS.VICE_RECTOR_APPROVED
+    && !(current.approvalRouteSnapshot || []).some((step) => step.required !== false && step.status === "PENDING");
+  if (routeComplete) {
+    await commitApprovedRequestBudget({
+      request: current,
+      user: users.budget,
+      req: fakeReq
+    });
+    current = await refresh(current);
+  }
+  if (current.status !== REQUEST_STATUS.BUDGET_COMMITTED) {
+    throw new Error(`${current.requestNumber} did not reach budget commitment; current status ${current.status}.`);
+  }
+  await processAccountsPayable({
+    requestId: current._id,
+    payload: accountingPayload(current, sequence, accountNumber),
+    user: users.accounting,
+    req: fakeReq
+  });
+  return refresh(current);
+}
+
+async function moveToBankFile(request, users, sequence, accountNumber, bank) {
+  const current = await moveToAccounting(request, users, sequence, accountNumber);
+  if ([
+    REQUEST_STATUS.BANK_FILE_GENERATED,
+    REQUEST_STATUS.PAID,
+    REQUEST_STATUS.RENDITION_PENDING,
+    REQUEST_STATUS.RECONCILED,
+    REQUEST_STATUS.CLOSED
+  ].includes(current.status)) return current;
+  await generatePaymentBatch({
+    requestIds: [current._id.toString()],
+    bank,
+    currency: current.currency,
+    paymentDate: currentDate,
+    user: users.treasury,
+    req: fakeReq
+  });
+  return refresh(current);
+}
+
+async function confirmPayment(request, users, bank, operationSuffix) {
+  const current = await refresh(request);
+  if ([
+    REQUEST_STATUS.PAID,
+    REQUEST_STATUS.RENDITION_PENDING,
+    REQUEST_STATUS.RECONCILED,
+    REQUEST_STATUS.CLOSED
+  ].includes(current.status)) return current;
+  await confirmTreasuryPayment({
+    requestId: current._id,
+    payload: {
+      operationNumber: `UMA-${bank}-${operationSuffix}`,
+      paidAt: currentDate,
+      confirmedAmount: current.totalAmount,
+      comments: "Pago bancario confirmado manualmente para demostración UMA."
+    },
+    user: users.treasury,
+    req: fakeReq
+  });
+  return refresh(current);
+}
+
+async function reconcileAndClose(request, users, bank, referenceSuffix) {
+  let current = await refresh(request);
+  if (current.status === REQUEST_STATUS.CLOSED) return current;
+  if (current.status !== REQUEST_STATUS.RECONCILED) {
+    await reconcilePayment({
+      requestId: current._id,
+      payload: {
+        bankReference: `EECC-${bank}-${referenceSuffix}`,
+        statementAmount: current.totalAmount,
+        comments: "Conciliación manual DEMO sin diferencia."
+      },
+      user: users.treasury,
+      req: fakeReq
+    });
+    current = await refresh(current);
+  }
+  if (current.status === REQUEST_STATUS.RECONCILED) {
+    await closeFinancialRequest({
+      id: current._id,
+      user: users.accounting,
+      req: fakeReq,
+      comments: "Solicitud cerrada después de pago y conciliación."
+    });
+  }
+  return refresh(current);
+}
+
+async function seedScenarios({ users, suppliers, costCenters, expenseTypes }) {
+  const scenarios = {};
+
+  scenarios.draft = await seedRequest({
+    key: "UMA_01_BORRADOR_SALUD",
+    number: "SOL-2026-30001",
+    requester: users.solicitorHealth,
+    supplier: suppliers.health.supplier,
+    costCenter: costCenters.health,
+    expenseType: expenseTypes.laboratorySupplies,
+    requestType: REQUEST_TYPE.OPEX,
+    expenseNature: EXPENSE_NATURE.GOODS,
+    description: "Borrador: kits de bioseguridad para prácticas de Ciencias de la Salud.",
+    net: 5000,
+    igv: 900,
+    total: 5900,
+    evidence: "NONE"
+  });
+
+  scenarios.directorPending = await seedRequest({
+    key: "UMA_02_PENDIENTE_DIRECTOR",
+    number: "SOL-2026-30002",
+    requester: users.solicitorHealth,
+    supplier: suppliers.services.supplier,
+    costCenter: costCenters.health,
+    expenseType: expenseTypes.maintenance,
+    requestType: REQUEST_TYPE.OPEX,
+    expenseNature: EXPENSE_NATURE.MAINTENANCE,
+    description: "Mantenimiento preventivo de cabinas y equipos del laboratorio clínico.",
+    net: 16000,
+    igv: 2880,
+    total: 18880,
+    priority: "ALTA",
+    evidence: "MAINTENANCE"
+  });
+  scenarios.directorPending = await submitIfDraft(scenarios.directorPending, users.solicitorHealth);
+
+  scenarios.vicePending = await seedRequest({
+    key: "UMA_03_PENDIENTE_VICERRECTOR",
+    number: "SOL-2026-30003",
+    requester: users.solicitorPharmacy,
+    supplier: suppliers.pharmacy.supplier,
+    costCenter: costCenters.pharmacy,
+    expenseType: expenseTypes.laboratorySupplies,
+    requestType: REQUEST_TYPE.PAGO_CON_COTIZACION,
+    expenseNature: EXPENSE_NATURE.GOODS,
+    description: "Reactivos para control de calidad en el laboratorio de Farmacia y Bioquímica.",
+    net: 20000,
+    igv: 3600,
+    total: 23600,
+    evidence: "GOODS_XML",
+    voucherNumber: "F001-30003"
+  });
+  scenarios.vicePending = await submitIfDraft(scenarios.vicePending, users.solicitorPharmacy);
+  if (scenarios.vicePending.status === REQUEST_STATUS.PENDING_APPROVAL) scenarios.vicePending = await approveNext(scenarios.vicePending, users);
+
+  scenarios.rectoratePending = await seedRequest({
+    key: "UMA_04_PENDIENTE_RECTORADO",
+    number: "SOL-2026-30004",
+    requester: users.solicitorEngineering,
+    supplier: suppliers.engineering.supplier,
+    costCenter: costCenters.engineering,
+    expenseType: expenseTypes.technologyAssets,
+    requestType: REQUEST_TYPE.CAPEX,
+    expenseNature: EXPENSE_NATURE.TECHNOLOGY,
+    description: "Renovación CAPEX de estaciones de simulación para Ingeniería e Inteligencia Artificial.",
+    net: 36000,
+    igv: 6480,
+    total: 42480,
+    currency: "USD",
+    project: "PRJ-CAMPUS-DIGITAL-2026",
+    priority: "ALTA",
+    evidence: "CAPEX"
+  });
+  scenarios.rectoratePending = await submitIfDraft(scenarios.rectoratePending, users.solicitorEngineering);
+  scenarios.rectoratePending = await approveUntilComplete(scenarios.rectoratePending, users, APPROVAL_STAGES.RECTORATE);
+
+  scenarios.budgetCommitted = await seedRequest({
+    key: "UMA_05_COMPROMISO_PRESUPUESTAL",
+    number: "SOL-2026-30005",
+    requester: users.solicitorPharmacy,
+    supplier: suppliers.services.supplier,
+    costCenter: costCenters.pharmacy,
+    expenseType: expenseTypes.professionalServices,
+    requestType: REQUEST_TYPE.OPEX,
+    expenseNature: EXPENSE_NATURE.SERVICES,
+    description: "Calibración y certificación de equipos del laboratorio de Farmacia.",
+    net: 15000,
+    igv: 2700,
+    total: 17700,
+    evidence: "SERVICE"
+  });
+  scenarios.budgetCommitted = await submitIfDraft(scenarios.budgetCommitted, users.solicitorPharmacy);
+  scenarios.budgetCommitted = await approveUntilComplete(scenarios.budgetCommitted, users);
+
+  scenarios.accounted = await seedRequest({
+    key: "UMA_06_CONTABILIZADO",
+    number: "SOL-2026-30006",
+    requester: users.solicitorHealth,
+    supplier: suppliers.health.supplier,
+    costCenter: costCenters.health,
+    expenseType: expenseTypes.laboratorySupplies,
+    requestType: REQUEST_TYPE.PAGO_CON_COTIZACION,
+    expenseNature: EXPENSE_NATURE.GOODS,
+    description: "Material descartable para prácticas de Enfermería, provisionado y pendiente de Tesorería.",
+    net: 12000,
+    igv: 2160,
+    total: 14160,
+    evidence: "GOODS_XML",
+    voucherNumber: "F001-30006"
+  });
+  scenarios.accounted = await submitIfDraft(scenarios.accounted, users.solicitorHealth);
+  scenarios.accounted = await moveToAccounting(scenarios.accounted, users, 30006, expenseTypes.laboratorySupplies.accountNumber);
+
+  scenarios.scheduled = await seedRequest({
+    key: "UMA_07_PROGRAMADO",
+    number: "SOL-2026-30007",
+    requester: users.solicitorHealth,
+    supplier: suppliers.health.supplier,
+    costCenter: costCenters.health,
+    expenseType: expenseTypes.professionalServices,
+    requestType: REQUEST_TYPE.OPEX,
+    expenseNature: EXPENSE_NATURE.SERVICES,
+    description: "Servicio de mantenimiento del software de simulación clínica programado para pago.",
+    net: 8000,
+    igv: 1440,
+    total: 9440,
+    evidence: "SERVICE"
+  });
+  scenarios.scheduled = await submitIfDraft(scenarios.scheduled, users.solicitorHealth);
+  scenarios.scheduled = await moveToAccounting(scenarios.scheduled, users, 30007, expenseTypes.professionalServices.accountNumber);
+  await schedulePayments({
+    requestIds: [scenarios.scheduled._id.toString()],
+    bank: "BCP",
+    currency: "PEN",
+    paymentDate: currentDate,
+    user: users.treasury,
+    req: fakeReq
+  });
+  scenarios.scheduled = await refresh(scenarios.scheduled);
+
+  scenarios.scotiabankTxt = await seedRequest({
+    key: "UMA_08_TXT_SCOTIABANK",
+    number: "SOL-2026-30008",
+    requester: users.solicitorHealth,
+    supplier: suppliers.services.supplier,
+    costCenter: costCenters.health,
+    expenseType: expenseTypes.maintenance,
+    requestType: REQUEST_TYPE.OPEX,
+    expenseNature: EXPENSE_NATURE.MAINTENANCE,
+    description: "Adecuación eléctrica de laboratorio incluida en TXT Scotiabank, pago aún no confirmado.",
+    net: 10000,
+    igv: 1800,
+    total: 11800,
+    evidence: "MAINTENANCE"
+  });
+  scenarios.scotiabankTxt = await submitIfDraft(scenarios.scotiabankTxt, users.solicitorHealth);
+  scenarios.scotiabankTxt = await moveToBankFile(scenarios.scotiabankTxt, users, 30008, expenseTypes.maintenance.accountNumber, "SCOTIABANK");
+
+  scenarios.interbankTxt = await seedRequest({
+    key: "UMA_09_TXT_INTERBANK_USD",
+    number: "SOL-2026-30009",
+    requester: users.solicitorEngineering,
+    supplier: suppliers.engineering.supplier,
+    costCenter: costCenters.engineering,
+    expenseType: expenseTypes.technologyAssets,
+    requestType: REQUEST_TYPE.CAPEX,
+    expenseNature: EXPENSE_NATURE.EQUIPMENT,
+    description: "Servidores GPU para el laboratorio de Inteligencia Artificial incluidos en TXT Interbank USD.",
+    net: 30000,
+    igv: 5400,
+    total: 35400,
+    currency: "USD",
+    project: "PRJ-CAMPUS-DIGITAL-2026",
+    evidence: "CAPEX"
+  });
+  scenarios.interbankTxt = await submitIfDraft(scenarios.interbankTxt, users.solicitorEngineering);
+  scenarios.interbankTxt = await moveToBankFile(scenarios.interbankTxt, users, 30009, expenseTypes.technologyAssets.accountNumber, "INTERBANK");
+
+  scenarios.bbvaPaid = await seedRequest({
+    key: "UMA_10_PAGADO_BBVA",
+    number: "SOL-2026-30010",
+    requester: users.solicitorPharmacy,
+    supplier: suppliers.pharmacy.supplier,
+    costCenter: costCenters.pharmacy,
+    expenseType: expenseTypes.laboratorySupplies,
+    requestType: REQUEST_TYPE.PAGO_CON_COTIZACION,
+    expenseNature: EXPENSE_NATURE.GOODS,
+    description: "Estándares de referencia farmacéutica pagados por BBVA y pendientes de conciliación.",
+    net: 25000,
+    igv: 4500,
+    total: 29500,
+    evidence: "GOODS_XML",
+    voucherNumber: "F001-30010"
+  });
+  scenarios.bbvaPaid = await submitIfDraft(scenarios.bbvaPaid, users.solicitorPharmacy);
+  scenarios.bbvaPaid = await moveToBankFile(scenarios.bbvaPaid, users, 30010, expenseTypes.laboratorySupplies.accountNumber, "BBVA");
+  scenarios.bbvaPaid = await confirmPayment(scenarios.bbvaPaid, users, "BBVA", "30010");
+
+  scenarios.bcpClosed = await seedRequest({
+    key: "UMA_11_CERRADO_BCP",
+    number: "SOL-2026-30011",
+    requester: users.solicitorHealth,
+    supplier: suppliers.health.supplier,
+    costCenter: costCenters.health,
+    expenseType: expenseTypes.laboratorySupplies,
+    requestType: REQUEST_TYPE.PAGO_CON_COTIZACION,
+    expenseNature: EXPENSE_NATURE.GOODS,
+    description: "Micropipetas para Laboratorio Clínico: ciclo completo, pago BCP, conciliación y cierre.",
+    net: 18000,
+    igv: 3240,
+    total: 21240,
+    evidence: "GOODS_XML",
+    voucherNumber: "F001-30011"
+  });
+  scenarios.bcpClosed = await submitIfDraft(scenarios.bcpClosed, users.solicitorHealth);
+  scenarios.bcpClosed = await moveToBankFile(scenarios.bcpClosed, users, 30011, expenseTypes.laboratorySupplies.accountNumber, "BCP");
+  scenarios.bcpClosed = await confirmPayment(scenarios.bcpClosed, users, "BCP", "30011");
+  scenarios.bcpClosed = await reconcileAndClose(scenarios.bcpClosed, users, "BCP", "30011");
+
+  scenarios.advancePending = await seedRequest({
+    key: "UMA_12_RENDICION_PENDIENTE",
+    number: "SOL-2026-30012",
+    requester: users.solicitorHealth,
+    supplier: suppliers.beneficiary.supplier,
+    costCenter: costCenters.health,
+    expenseType: expenseTypes.travel,
+    requestType: REQUEST_TYPE.ENTREGA_RENDIR,
+    expenseNature: EXPENSE_NATURE.TRAVEL,
+    description: "Entrega a rendir para visita académica de Ciencias de la Salud; pendiente de sustento.",
+    net: 4000,
+    igv: 0,
+    total: 4000,
+    evidence: "SUPPORTING"
+  });
+  scenarios.advancePending = await submitIfDraft(scenarios.advancePending, users.solicitorHealth);
+  scenarios.advancePending = await moveToBankFile(scenarios.advancePending, users, 30012, expenseTypes.travel.accountNumber, "BCP");
+  scenarios.advancePending = await confirmPayment(scenarios.advancePending, users, "BCP", "30012");
+
+  scenarios.advanceClosed = await seedRequest({
+    key: "UMA_13_RENDICION_CERRADA",
+    number: "SOL-2026-30013",
+    requester: users.solicitorHealth,
+    supplier: suppliers.beneficiary.supplier,
+    costCenter: costCenters.health,
+    expenseType: expenseTypes.travel,
+    requestType: REQUEST_TYPE.ENTREGA_RENDIR,
+    expenseNature: EXPENSE_NATURE.TRAVEL,
+    description: "Entrega a rendir para jornada de investigación: sustentada, validada, conciliada y cerrada.",
+    net: 4720,
+    igv: 0,
+    total: 4720,
+    evidence: "SUPPORTING"
+  });
+  scenarios.advanceClosed = await submitIfDraft(scenarios.advanceClosed, users.solicitorHealth);
+  scenarios.advanceClosed = await moveToBankFile(scenarios.advanceClosed, users, 30013, expenseTypes.travel.accountNumber, "BCP");
+  scenarios.advanceClosed = await confirmPayment(scenarios.advanceClosed, users, "BCP", "30013");
+  if (scenarios.advanceClosed.status === REQUEST_STATUS.RENDITION_PENDING && scenarios.advanceClosed.rendition?.status === "PENDING") {
+    const renditionTmp = path.join(uploadRoot, "tmp", `rendicion-${scenarios.advanceClosed._id}.pdf`);
+    await fs.mkdir(path.dirname(renditionTmp), { recursive: true });
+    const renditionContent = minimalPdf(`Rendición completa - ${scenarios.advanceClosed.requestNumber}`);
+    await fs.writeFile(renditionTmp, renditionContent);
+    await submitRendition({
+      requestId: scenarios.advanceClosed._id,
+      payload: {
+        lines: [{
+          costCenter: costCenters.health._id,
+          expenseType: expenseTypes.travel._id,
+          netAmount: 4720,
+          igvAmount: 0,
+          totalAmount: 4720
+        }],
+        amountReturned: 0,
+        comments: "Rendición completa con comprobantes DEMO."
+      },
+      files: {
+        rendition: [{
+          originalname: "rendicion-completa-demo.pdf",
+          filename: `rendicion-${scenarios.advanceClosed._id}.pdf`,
+          path: renditionTmp,
+          mimetype: "application/pdf",
+          size: Buffer.byteLength(renditionContent)
+        }]
+      },
+      user: users.solicitorHealth,
+      req: fakeReq
+    });
+    scenarios.advanceClosed = await refresh(scenarios.advanceClosed);
+  }
+  if (scenarios.advanceClosed.status === REQUEST_STATUS.RENDITION_PENDING && scenarios.advanceClosed.rendition?.status === "SUBMITTED") {
+    await reviewRendition({
+      requestId: scenarios.advanceClosed._id,
+      action: "VALIDATE",
+      comments: "Rendición validada por Contabilidad; gasto reconocido y Cuenta 14 compensada.",
+      user: users.accounting,
+      req: fakeReq
+    });
+    scenarios.advanceClosed = await refresh(scenarios.advanceClosed);
+  }
+  scenarios.advanceClosed = await reconcileAndClose(scenarios.advanceClosed, users, "BCP", "30013");
+
+  scenarios.nonDeductible = await seedRequest({
+    key: "UMA_14_REEMBOLSO_NO_DEDUCIBLE",
+    number: "SOL-2026-30014",
+    requester: users.solicitorHealth,
+    supplier: suppliers.beneficiary.supplier,
+    costCenter: costCenters.health,
+    expenseType: expenseTypes.nonDeductible,
+    requestType: REQUEST_TYPE.REEMBOLSO_SIN_SUSTENTO,
+    expenseNature: EXPENSE_NATURE.REIMBURSEMENT_LIQUIDATION,
+    description: "Reembolso sin sustento fiscal tratado con la cuenta no deducible configurada.",
+    net: 850,
+    igv: 0,
+    total: 850,
+    evidence: "SUPPORTING"
+  });
+  scenarios.nonDeductible = await submitIfDraft(scenarios.nonDeductible, users.solicitorHealth);
+  scenarios.nonDeductible = await moveToAccounting(scenarios.nonDeductible, users, 30014, expenseTypes.nonDeductible.accountNumber);
+
+  scenarios.observed = await seedRequest({
+    key: "UMA_15_OBSERVADO",
+    number: "SOL-2026-30015",
+    requester: users.solicitorHealth,
+    supplier: suppliers.services.supplier,
+    costCenter: costCenters.health,
+    expenseType: expenseTypes.maintenance,
+    requestType: REQUEST_TYPE.OPEX,
+    expenseNature: EXPENSE_NATURE.MAINTENANCE,
+    description: "Adecuación de almacén observada para aclarar el alcance y cronograma.",
+    net: 7000,
+    igv: 1260,
+    total: 8260,
+    evidence: "MAINTENANCE"
+  });
+  scenarios.observed = await submitIfDraft(scenarios.observed, users.solicitorHealth);
+  if (scenarios.observed.status === REQUEST_STATUS.PENDING_APPROVAL) {
+    await decideApproval({
+      id: scenarios.observed._id,
+      action: "OBSERVE",
+      comments: "Adjuntar cronograma de trabajo y precisar el responsable de la conformidad.",
+      user: users.directorHealth,
+      req: fakeReq
+    });
+    scenarios.observed = await refresh(scenarios.observed);
+  }
+
+  scenarios.rejected = await seedRequest({
+    key: "UMA_16_RECHAZADO",
+    number: "SOL-2026-30016",
+    requester: users.solicitorPharmacy,
+    supplier: suppliers.pharmacy.supplier,
+    costCenter: costCenters.pharmacy,
+    expenseType: expenseTypes.professionalServices,
+    requestType: REQUEST_TYPE.OPEX,
+    expenseNature: EXPENSE_NATURE.SERVICES,
+    description: "Servicio duplicado rechazado por la Dirección de Farmacia.",
+    net: 3000,
+    igv: 540,
+    total: 3540,
+    evidence: "SERVICE"
+  });
+  scenarios.rejected = await submitIfDraft(scenarios.rejected, users.solicitorPharmacy);
+  if (scenarios.rejected.status === REQUEST_STATUS.PENDING_APPROVAL) {
+    await decideApproval({
+      id: scenarios.rejected._id,
+      action: "REJECT",
+      comments: "La necesidad ya está cubierta por el contrato institucional vigente.",
+      user: users.directorPharmacy,
+      req: fakeReq
+    });
+    scenarios.rejected = await refresh(scenarios.rejected);
+  }
+
+  scenarios.budgetException = await seedRequest({
+    key: "UMA_17_EXCEPCION_PRESUPUESTAL",
+    number: "SOL-2026-30017",
+    requester: users.solicitorEngineering,
+    supplier: suppliers.engineering.supplier,
+    costCenter: costCenters.research,
+    expenseType: expenseTypes.laboratoryAssets,
+    requestType: REQUEST_TYPE.CAPEX,
+    expenseNature: EXPENSE_NATURE.RESEARCH,
+    description: "Equipo biomédico para investigación con saldo insuficiente y aprobación extraordinaria pendiente.",
+    net: 50000,
+    igv: 9000,
+    total: 59000,
+    project: "PRJ-INV-BIOMED-2026",
+    priority: "ALTA",
+    evidence: "CAPEX"
+  });
+  scenarios.budgetException = await submitIfDraft(scenarios.budgetException, users.solicitorEngineering);
+  scenarios.budgetException = await approveUntilComplete(scenarios.budgetException, users);
+
+  scenarios.closedPeriod = await seedRequest({
+    key: "UMA_18_PERIODO_CERRADO",
+    number: "SOL-2026-30018",
+    requester: users.solicitorHealth,
+    supplier: suppliers.health.supplier,
+    costCenter: costCenters.health,
+    expenseType: expenseTypes.laboratorySupplies,
+    requestType: REQUEST_TYPE.OPEX,
+    expenseNature: EXPENSE_NATURE.GOODS,
+    description: "Registro histórico de prueba asociado a un periodo cerrado; no debe poder modificarse.",
+    net: 1000,
+    igv: 180,
+    total: 1180,
+    evidence: "NONE",
+    period: closedPeriod
+  });
+
+  return scenarios;
+}
+
+async function printSummary(users) {
+  const [statusSummary, collectionSummary] = await Promise.all([
+    FinancialRequest.aggregate([
+      { $group: { _id: "$status", count: { $sum: 1 }, amountPEN: { $sum: "$totalPENEquivalent" } } },
+      { $sort: { _id: 1 } }
+    ]),
+    Promise.all([
+      User.countDocuments(),
+      Supplier.countDocuments(),
+      CostCenter.countDocuments(),
+      ExpenseType.countDocuments(),
+      FinancialRequest.countDocuments()
+    ])
+  ]);
+  console.log(JSON.stringify({
+    success: true,
+    dataset: "UMA cohesive development demo",
+    accountingPeriod: currentPeriod,
+    users: collectionSummary[0],
+    suppliers: collectionSummary[1],
+    costCenters: collectionSummary[2],
+    expenseTypes: collectionSummary[3],
+    requests: collectionSummary[4],
+    statuses: statusSummary,
+    primaryDemoAccounts: [
+      users.admin.email,
+      users.solicitorHealth.email,
+      users.directorHealth.email,
+      users.viceRector.email,
+      users.budget.email,
+      users.accounting.email,
+      users.treasury.email,
+      users.management.email
+    ],
+    password: demoPassword,
+    notice: "Development-only fictional data. SUNAT and bank files remain manual/demo integrations."
+  }, null, 2));
 }
 
 async function seed() {
   if (process.env.NODE_ENV === "production") throw new Error("Development seed is disabled in production.");
   await connectDB();
   await fs.mkdir(generatedRoot, { recursive: true });
+  await fs.mkdir(uploadRoot, { recursive: true });
   const costCenters = await seedCostCenters();
   const users = await seedUsers(costCenters);
   const expenseTypes = await seedExpenseTypes();
-  const suppliers = await seedSuppliers(users[ROLES.ADMIN]);
-  await seedPeriodsAndRates(users[ROLES.ADMIN]);
+  const suppliers = await seedSuppliers(users.admin);
+  await seedPeriodsAndRates(users.admin);
   await seedRulesAndMappings({ costCenters, expenseTypes });
-  const context = { users, suppliers, costCenters, expenseTypes };
-  await seedDraftScenarios(context);
-  await seedBankWorkflow(context, "BCP", 1, { confirmAndClose: true });
-  await seedBankWorkflow(context, "BBVA", 2);
-  await seedBankWorkflow(context, "INTERBANK", 3);
-  await seedBankWorkflow(context, "SCOTIABANK", 4);
-  await seedAdvanceScenario(context);
-  await Counter.updateOne({ key: "financial-request", year: 2026 }, { $max: { sequence: 10200 } }, { upsert: true });
-  console.log("Development seed completed. Credentials are documented as development-only in docs/DEVELOPMENT_SEED.md.");
+  await seedScenarios({ users, suppliers, costCenters, expenseTypes });
+  await Counter.updateOne(
+    { key: "financial-request", year: Number(currentPeriod.slice(0, 4)) },
+    { $max: { sequence: 30100 } },
+    { upsert: true }
+  );
+  await printSummary(users);
 }
 
 seed()

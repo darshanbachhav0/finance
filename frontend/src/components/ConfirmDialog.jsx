@@ -13,6 +13,7 @@ export default function ConfirmDialog({
   cancelLabel = "Cancel",
   tone = "primary",
   inputLabel,
+  inputType = "textarea",
   inputRequired = false,
   inputPlaceholder,
   loading = false,
@@ -28,13 +29,13 @@ export default function ConfirmDialog({
   const confirmRef = useRef(null);
   const onCloseRef = useRef(onClose);
   const previousFocusRef = useRef(null);
-  const contentRef = useRef({ title, description, details, confirmLabel, cancelLabel, tone, inputLabel, inputRequired, inputPlaceholder });
+  const contentRef = useRef({ title, description, details, confirmLabel, cancelLabel, tone, inputLabel, inputType, inputRequired, inputPlaceholder });
   const { shouldRender, phase } = useAnimatedPresence(open, 170);
 
   onCloseRef.current = onClose;
-  if (open) contentRef.current = { title, description, details, confirmLabel, cancelLabel, tone, inputLabel, inputRequired, inputPlaceholder };
+  if (open) contentRef.current = { title, description, details, confirmLabel, cancelLabel, tone, inputLabel, inputType, inputRequired, inputPlaceholder };
   const content = open
-    ? { title, description, details, confirmLabel, cancelLabel, tone, inputLabel, inputRequired, inputPlaceholder }
+    ? { title, description, details, confirmLabel, cancelLabel, tone, inputLabel, inputType, inputRequired, inputPlaceholder }
     : contentRef.current;
 
   useEffect(() => {
@@ -110,14 +111,25 @@ export default function ConfirmDialog({
         {content.inputLabel && (
           <label className="field">
             <span>{t(content.inputLabel)}{content.inputRequired ? " *" : ""}</span>
-            <textarea
-              ref={inputRef}
-              rows="3"
-              value={inputValue}
-              placeholder={t(content.inputPlaceholder || "Add comments")}
-              onChange={(event) => setInputValue(event.target.value)}
-              required={content.inputRequired}
-            />
+            {content.inputType === "text" ? (
+              <input
+                ref={inputRef}
+                type="text"
+                value={inputValue}
+                placeholder={t(content.inputPlaceholder || "Enter a value")}
+                onChange={(event) => setInputValue(event.target.value)}
+                required={content.inputRequired}
+              />
+            ) : (
+              <textarea
+                ref={inputRef}
+                rows="3"
+                value={inputValue}
+                placeholder={t(content.inputPlaceholder || "Add comments")}
+                onChange={(event) => setInputValue(event.target.value)}
+                required={content.inputRequired}
+              />
+            )}
             {content.inputRequired && !inputValue.trim() && <small className="field-hint">{t("A comment is required to continue.")}</small>}
           </label>
         )}

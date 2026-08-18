@@ -231,13 +231,16 @@ export async function listRequestsPage(queryParams, user) {
   if (queryParams.period) query.accountingPeriod = queryParams.period;
   if (queryParams.currency) query.currency = queryParams.currency;
   if (queryParams.supplier) query.supplier = queryParams.supplier;
+  if (queryParams.project) query.project = queryParams.project;
+  if (queryParams.costCenter) query["lines.costCenter"] = queryParams.costCenter;
+  if (queryParams.area) query.$and = [...(query.$and || []), { $or: [{ requesterArea: queryParams.area }, { requestingArea: queryParams.area }] }];
   if (queryParams.search) {
     const search = new RegExp(escapedRegex(queryParams.search), "i");
     const [supplierIds, userIds] = await Promise.all([
       Supplier.distinct("_id", { $or: [{ legalName: search }, { name: search }, { normalizedIdentifier: search }, { rucDni: search }] }),
       User.distinct("_id", { $or: [{ name: search }, { email: search }, { area: search }] })
     ]);
-    query.$and = [{ $or: [
+    query.$and = [...(query.$and || []), { $or: [
       { requestNumber: search },
       { description: search },
       { requesterArea: search },

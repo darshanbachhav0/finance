@@ -7,11 +7,24 @@ const emptyPagination = Object.freeze({ page: 1, pageSize: 10, total: 0, totalPa
 export default function usePaginatedResource(endpoint, {
   fixedParams = {},
   initialFilters = {},
+  initialSearch = "",
   initialPageSize = 10,
+  persistKey,
   enabled = true,
   debounceMs = 220
 } = {}) {
-  const [query, setQuery] = useState({ page: 1, pageSize: initialPageSize, search: "", filters: initialFilters, sort: null });
+  const storageKey = `erp_table_query:${persistKey || endpoint}`;
+  const [query, setQuery] = useState(() => {
+    const fallback = { page: 1, pageSize: initialPageSize, search: initialSearch, filters: initialFilters, sort: null };
+    try {
+      const stored = JSON.parse(sessionStorage.getItem(storageKey) || "null");
+      if (!stored) return fallback;
+      const explicitFilters = Object.fromEntries(Object.entries(initialFilters).filter(([, value]) => value !== "" && value !== undefined && value !== null));
+      return { ...fallback, ...stored, ...(initialSearch ? { search: initialSearch } : {}), filters: { ...stored.filters, ...explicitFilters } };
+    } catch {
+      return fallback;
+    }
+  });
   const [rows, setRows] = useState([]);
   const [pagination, setPagination] = useState({ ...emptyPagination, pageSize: initialPageSize });
   const [payload, setPayload] = useState({});
@@ -20,6 +33,10 @@ export default function usePaginatedResource(endpoint, {
   const [revision, setRevision] = useState(0);
   const fixedParamsKey = JSON.stringify(fixedParams);
   const requestParams = useMemo(() => buildRemoteTableParams(query, fixedParams), [query, fixedParamsKey]);
+
+  useEffect(() => {
+    sessionStorage.setItem(storageKey, JSON.stringify(query));
+  }, [query, storageKey]);
 
   useEffect(() => {
     if (!enabled) {

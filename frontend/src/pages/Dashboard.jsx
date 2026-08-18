@@ -1,7 +1,8 @@
 import { AlertTriangle, CalendarClock, CircleDollarSign, FileText, RefreshCw, Users } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import api from "../api/client.js";
+import AnalyticsChart from "../components/AnalyticsChart.jsx";
 import DataTable from "../components/DataTable.jsx";
 import Message from "../components/Message.jsx";
 import PageHeader from "../components/PageHeader.jsx";
@@ -9,6 +10,7 @@ import StatCard from "../components/StatCard.jsx";
 import StatusBadge from "../components/StatusBadge.jsx";
 import ProtectedAssetButton from "../components/ProtectedAssetButton.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
+import { formatCurrency, formatDateTime, formatNumber } from "../utils/formatters.js";
 
 const descriptions = {
   Admin: "System activity, workflow health, users, and master-data readiness.",
@@ -31,6 +33,7 @@ const metricIcons = {
 
 export default function Dashboard() {
   const { t, language } = useLanguage();
+  const navigate = useNavigate();
   const [summary, setSummary] = useState(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -53,26 +56,22 @@ export default function Dashboard() {
   function metricValue(metric) {
     if (metric.format === "text") return t(metric.value);
     if (metric.format === "currency") {
-      return new Intl.NumberFormat(language === "es" ? "es-PE" : "en-US", {
-        style: "currency",
-        currency: metric.currency || "PEN",
-        maximumFractionDigits: 2
-      }).format(metric.value || 0);
+      return formatCurrency(metric.value, metric.currency || "PEN", language);
     }
-    return new Intl.NumberFormat(language === "es" ? "es-PE" : "en-US").format(metric.value || 0);
+    return formatNumber(metric.value, language);
   }
 
   const requestColumns = [
     { key: "requestNumber", label: "Request", render: (row) => <Link to={`/requests/${row._id}`}>{row.requestNumber}</Link> },
     { key: "supplier", label: "Supplier", getValue: (row) => row.supplier?.name, render: (row) => row.supplier?.name || "-" },
-    { key: "totalAmount", label: "Amount", render: (row) => `${row.currency} ${Number(row.totalAmount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}` },
+    { key: "totalAmount", label: "Amount", align: "right", render: (row) => formatCurrency(row.totalAmount, row.currency, language) },
     { key: "status", label: "Status", render: (row) => <StatusBadge status={row.status} /> }
   ];
   const operationalRows = summary?.oldestRequests || summary?.queue?.map((item) => item.request ? ({ ...item.request, supplier: item.supplier, totalAmount: item.outstandingAmount, currency: item.currency, status: item.status }) : item) || summary?.recentRequests || [];
 
   return (
     <section>
-      <PageHeader title={`${summary?.role || ""} Dashboard`.trim()} description={descriptions[summary?.role] || descriptions.Admin} actions={<button type="button" className="secondary-button" onClick={load} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={16} /><span>{t("Refresh")}</span></button>} />
+      <PageHeader title={`${summary?.role || ""} Dashboard`.trim()} description={descriptions[summary?.role] || descriptions.Admin} actions={<><span className="last-updated">{t("Last updated")}: {summary?.lastUpdated ? formatDateTime(summary.lastUpdated, language) : "-"}</span><button type="button" className="secondary-button" onClick={load} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={16} /><span>{t("Refresh")}</span></button></>} />
       <Message type="error">{error}</Message>
 
       {loading && (
@@ -111,21 +110,41 @@ export default function Dashboard() {
               <DataTable className="dashboard-request-table" controls={false} rows={operationalRows} columns={requestColumns} emptyDescription="No current requests." />
             </div>
 
-            <div className="workspace-panel dashboard-secondary">
-              <div className="section-heading"><div><h3>{t("Workflow distribution")}</h3><p>{t("Requests grouped by current status.")}</p></div></div>
-              <div className="distribution-list">
-                {summary.byStatus.map((item) => {
-                  const percentage = summary.total ? Math.round((item.count / summary.total) * 100) : 0;
-                  return (
-                    <div className="distribution-row" key={item._id}>
-                      <div><StatusBadge status={item._id} /><strong>{item.count}</strong></div>
-                      <div className="progress-track" aria-label={`${t(item._id)} ${percentage}%`}><span style={{ width: `${percentage}%` }} /></div>
-                    </div>
-                  );
-                })}
-                {!summary.byStatus.length && <p className="empty-copy">{t("No request data available.")}</p>}
-              </div>
-            </div>
+            <AnalyticsChart
+              title="Workflow distribution"
+              description="Requests grouped by current status."
+              data={summary.byStatus.map((item) => ({ ...item, name: t(item._id) }))}
+              xKey="name"
+              horizontal
+              compact
+              height={310}
+              series={[{ key: "count", label: "Requests", color: "#087c75" }]}
+              valueFormatter={(value) => formatNumber(value, language)}
+              onDrillDown={(row) => navigate(`/requests?status=${row._id}`)}
+            />
+
+            {summary.budget ? (
+              <AnalyticsChart
+                title="Budget execution"
+                description="Assigned, committed, executed, paid, and available for the current period."
+                data={[{ name: new Date().toISOString().slice(0, 7), ...summary.budget.totals }]}
+                height={245}
+                series={[{ key: "assigned", label: "Assigned", color: "#17344c" }, { key: "committed", label: "Committed", color: "#d18a00" }, { key: "executed", label: "Executed", color: "#087c75" }, { key: "paid", label: "Paid", color: "#2463a6" }, { key: "available", label: "Available", color: "#19733d" }]}
+                valueFormatter={(value) => formatCurrency(value, "PEN", language)}
+              />
+            ) : (
+              <AnalyticsChart
+                title="Requests by type"
+                description="PEN-equivalent workload by request classification."
+                type="donut"
+                data={summary.byType.map((item) => ({ ...item, name: t(item._id) }))}
+                xKey="name"
+                height={245}
+                series={[{ key: "amount", label: "PEN amount", color: "#087c75" }]}
+                valueFormatter={(value) => formatCurrency(value, "PEN", language)}
+                onDrillDown={(row) => navigate(`/requests?requestType=${row._id}`)}
+              />
+            )}
 
             {summary.recentDecisions && (
               <div className="workspace-panel dashboard-primary">

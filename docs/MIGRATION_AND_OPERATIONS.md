@@ -117,7 +117,7 @@ No automatic destructive restore command is provided. This prevents an operator 
 
 ## Development Seed and Reset
 
-`npm run seed` is idempotent and creates development-only users, active/closed periods, exchange rate, suppliers for four banks, bank histories, Cost Centers, accounts, budgets, approval/document/budget rules, mappings, and representative lifecycle scenarios.
+`npm run seed` is idempotent and creates the fictional UMA development dataset documented in `docs/UMA_DEMO_DATA.md`: eight primary role accounts, supporting area users, active/closed periods, a non-authoritative manual demo exchange rate, Peruvian-format suppliers for four banks, bank history, UMA Cost Centers, accounts, budgets, approval/document/budget rules, mappings, and linked lifecycle scenarios.
 
 To reset the development database only:
 
@@ -131,8 +131,9 @@ The reset script:
 - Refuses to run when `NODE_ENV=production`.
 - Requires the built-in `--confirm` flag supplied by the npm script.
 - Refuses a database name that does not look like a development ERP database.
+- Purges active `backend/uploads` and `backend/generated` data through the npm script's `--purge-files` flag.
 
-Never run development reset against UMA production data.
+Run `npm run backup` before reset when the current development state may need to be recovered. Never run development reset against UMA production data.
 
 ## Local File Operations
 

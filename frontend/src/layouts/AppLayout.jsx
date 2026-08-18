@@ -15,6 +15,7 @@ import {
   LogOut,
   Menu,
   ReceiptText,
+  Search,
   ScrollText,
   Settings2,
   SlidersHorizontal,
@@ -25,6 +26,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import api from "../api/client.js";
+import CommandPalette from "../components/CommandPalette.jsx";
 import LanguageToggle from "../components/LanguageToggle.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
@@ -107,13 +109,17 @@ export default function AppLayout() {
   const [notifications, setNotifications] = useState({ data: [], unreadCount: 0 });
   const [taskOpen, setTaskOpen] = useState(false);
   const [userOpen, setUserOpen] = useState(false);
+  const [commandOpen, setCommandOpen] = useState(false);
   const menusRef = useRef(null);
+  const mobileMenuRef = useRef(null);
+  const sidebarRef = useRef(null);
   const mobileBackdrop = useAnimatedPresence(mobileOpen, 180);
 
   const visibleGroups = useMemo(() => groups.map((group) => ({
     ...group,
     items: group.items.filter((item) => canAccessNavigation(user.role, item.path))
   })).filter((group) => group.items.length), [user.role]);
+  const commandPages = useMemo(() => visibleGroups.flatMap((group) => group.items.map((item) => ({ ...item, group: group.label }))), [visibleGroups]);
 
   const pageTitle = routeTitles.find(([pattern]) => pattern.test(location.pathname))?.[1] || "Financial Control";
   const breadcrumb = location.pathname === "/" ? [] : [{ label: "Dashboard", path: "/" }, { label: pageTitle }];
@@ -158,6 +164,56 @@ export default function AppLayout() {
     return () => document.removeEventListener("mousedown", closeMenus);
   }, []);
 
+  useEffect(() => {
+    const openCommand = (event) => {
+      const target = event.target;
+      const isEditing = target instanceof HTMLElement && (target.matches("input, textarea, select") || target.isContentEditable);
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setTaskOpen(false);
+        setUserOpen(false);
+        setCommandOpen(true);
+      } else if (event.key === "/" && !isEditing) {
+        event.preventDefault();
+        setCommandOpen(true);
+      }
+    };
+    window.addEventListener("keydown", openCommand);
+    return () => window.removeEventListener("keydown", openCommand);
+  }, []);
+
+  useEffect(() => {
+    if (!mobileOpen) return undefined;
+    const sidebar = sidebarRef.current;
+    const focusable = () => [...(sidebar?.querySelectorAll('a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])') || [])].filter((item) => item.offsetParent !== null);
+    const frame = window.requestAnimationFrame(() => focusable()[0]?.focus({ preventScroll: true }));
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setMobileOpen(false);
+        window.requestAnimationFrame(() => mobileMenuRef.current?.focus({ preventScroll: true }));
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const items = focusable();
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [mobileOpen]);
+
   function toggleCollapsed() {
     setCollapsed((current) => {
       localStorage.setItem("erp_sidebar_collapsed", String(!current));
@@ -167,15 +223,15 @@ export default function AppLayout() {
 
   return (
     <div className={`app-shell${collapsed ? " sidebar-collapsed" : ""}${mobileOpen ? " mobile-nav-open" : ""}`}>
-      {mobileBackdrop.shouldRender && <button type="button" className={`mobile-nav-backdrop motion-${mobileBackdrop.phase}`} onClick={() => setMobileOpen(false)} aria-label={t("Close navigation")} />}
-      <aside className="sidebar" aria-label={t("Primary navigation")}>
+      {mobileBackdrop.shouldRender && <button type="button" className={`mobile-nav-backdrop motion-${mobileBackdrop.phase}`} onClick={() => { setMobileOpen(false); window.requestAnimationFrame(() => mobileMenuRef.current?.focus({ preventScroll: true })); }} aria-label={t("Close navigation")} />}
+      <aside ref={sidebarRef} className="sidebar" aria-label={t("Primary navigation")}>
         <div className="brand">
           <div className="brand-mark">FC</div>
           <div className="brand-copy">
             <strong>{t("Financial Control")}</strong>
             <span>{t("Requests & payments")}</span>
           </div>
-          <button type="button" className="icon-button sidebar-mobile-close" onClick={() => setMobileOpen(false)} aria-label={t("Close navigation")}><X size={19} /></button>
+          <button type="button" className="icon-button sidebar-mobile-close" onClick={() => { setMobileOpen(false); window.requestAnimationFrame(() => mobileMenuRef.current?.focus({ preventScroll: true })); }} aria-label={t("Close navigation")}><X size={19} /></button>
         </div>
 
         <nav className="nav-groups">
@@ -213,7 +269,7 @@ export default function AppLayout() {
       <div className="main-shell">
         <header className="topbar">
           <div className="topbar-title">
-            <button type="button" className="icon-button mobile-menu-button" onClick={() => setMobileOpen(true)} aria-label={t("Open navigation")}><Menu size={20} /></button>
+            <button ref={mobileMenuRef} type="button" className="icon-button mobile-menu-button" onClick={() => setMobileOpen(true)} aria-label={t("Open navigation")}><Menu size={20} /></button>
             <div>
               {breadcrumb.length > 0 && (
                 <nav className="breadcrumbs" aria-label={t("Breadcrumbs")}>
@@ -225,6 +281,9 @@ export default function AppLayout() {
           </div>
 
           <div className="topbar-actions" ref={menusRef}>
+            <button type="button" className="command-trigger" onClick={() => setCommandOpen(true)} aria-label={t("Search the system")} aria-keyshortcuts="Control+K Meta+K">
+              <Search size={16} /><span>{t("Search")}</span><kbd>Ctrl K</kbd>
+            </button>
             <LanguageToggle />
             <div className="topbar-menu">
               <button type="button" className="icon-button notification-button" onClick={() => { setTaskOpen((current) => !current); setUserOpen(false); }} aria-label={t("Open task notifications")} aria-expanded={taskOpen}>
@@ -279,6 +338,7 @@ export default function AppLayout() {
         </header>
         <main className="content"><Outlet /></main>
       </div>
+      <CommandPalette open={commandOpen} onClose={() => setCommandOpen(false)} pages={commandPages} />
     </div>
   );
 }
