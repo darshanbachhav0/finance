@@ -14,6 +14,8 @@ import Counter from "../models/Counter.js";
 import DocumentRule from "../models/DocumentRule.js";
 import ExchangeRate from "../models/ExchangeRate.js";
 import ExpenseType from "../models/ExpenseType.js";
+import EmployeeReimbursementBankAccount from "../models/EmployeeReimbursementBankAccount.js";
+import FinanceConfiguration from "../models/FinanceConfiguration.js";
 import FinancialRequest from "../models/FinancialRequest.js";
 import Project from "../models/Project.js";
 import Supplier from "../models/Supplier.js";
@@ -35,6 +37,7 @@ import { connectDB } from "../config/db.js";
 import {
   APPROVAL_STAGES,
   EXPENSE_NATURE,
+  FINANCE_CONFIGURATION_KEYS,
   REQUEST_STATUS,
   REQUEST_TYPE,
   ROLES
@@ -205,10 +208,11 @@ async function seedUsers(costCenters) {
   ];
 
   const users = {};
-  for (const definition of definitions) {
+  for (const [index, definition] of definitions.entries()) {
     const passwordHash = await bcrypt.hash(demoPassword, 12);
     users[definition.key] = await upsert(User, { email: definition.email }, {
       name: definition.name,
+      employeeCode: `UMA-DEMO-${String(index + 1).padStart(3, "0")}`,
       email: definition.email,
       passwordHash,
       role: definition.role,
@@ -355,11 +359,13 @@ function invoiceXml({ supplier, number, date, currency, net, igv, total }) {
 </Invoice>`;
 }
 
-async function seedSupplier({ key, identifier, name, bank, account, cci, currency, address, supplierType, admin, previousAccount }) {
+async function seedSupplier({ key, supplierCode, identifier, name, bank, account, cci, currency, address, supplierType, admin, previousAccount }) {
   const supplier = await upsert(Supplier, { rucDni: identifier }, {
+    supplierCode,
     identifierType: identifier.length === 8 ? "DNI" : "RUC",
     normalizedIdentifier: identifier,
     legalName: name,
+    commercialName: name,
     name,
     taxAddress: address,
     fiscalAddress: address,
@@ -383,6 +389,16 @@ async function seedSupplier({ key, identifier, name, bank, account, cci, currenc
       validatedAt: now,
       validatedBy: admin._id,
       comments: "Validación manual DEMO. No representa una consulta de producción a SUNAT."
+    },
+    declarations: {
+      stateSanctions: { answer: "NO", comments: "Declaración ficticia para demostración.", declaredAt: now },
+      complianceModel: { answer: "YES", comments: "Declaración ficticia para demostración.", declaredAt: now }
+    },
+    complianceReview: {
+      result: "APPROVED",
+      reviewedBy: admin._id,
+      reviewedAt: now,
+      comments: "Revisión manual DEMO; no corresponde a una validación externa."
     },
     reviewedBy: admin._id,
     reviewedAt: now,
@@ -408,7 +424,12 @@ async function seedSupplier({ key, identifier, name, bank, account, cci, currenc
       accountNumber: previousAccount.account
     }, {
       cci: previousAccount.cci,
+      accountType: "CURRENT",
+      accountHolderName: name,
       active: false,
+      preferred: false,
+      verificationStatus: "LEGACY_ACCEPTED",
+      ownershipResult: "MANUAL_ACCEPTED",
       validFrom: previousMonthDate,
       validTo: now,
       createdBy: admin._id,
@@ -418,9 +439,14 @@ async function seedSupplier({ key, identifier, name, bank, account, cci, currenc
       supplier.bankHistory.push({
         bankName: bank,
         currency,
+        accountType: "CURRENT",
+        accountHolderName: name,
         bankAccount: previousAccount.account,
         cci: previousAccount.cci,
         status: "INACTIVE",
+        preferred: false,
+        verificationStatus: "LEGACY_ACCEPTED",
+        ownershipResult: "MANUAL_ACCEPTED",
         validFrom: previousMonthDate,
         validTo: now,
         createdBy: admin._id,
@@ -436,8 +462,16 @@ async function seedSupplier({ key, identifier, name, bank, account, cci, currenc
     accountNumber: account
   }, {
     cci,
+    accountType: "CURRENT",
+    accountHolderName: name,
     validFrom: now,
     active: true,
+    preferred: true,
+    verificationStatus: "VERIFIED",
+    ownershipResult: "MANUAL_ACCEPTED",
+    verifiedBy: admin._id,
+    verifiedAt: now,
+    verificationSource: "UMA_DEMO_MANUAL_REVIEW",
     createdBy: admin._id,
     changedBy: admin._id
   });
@@ -445,9 +479,17 @@ async function seedSupplier({ key, identifier, name, bank, account, cci, currenc
     supplier.bankHistory.push({
       bankName: bank,
       currency,
+      accountType: "CURRENT",
+      accountHolderName: name,
       bankAccount: account,
       cci,
       status: "ACTIVE",
+      preferred: true,
+      verificationStatus: "VERIFIED",
+      ownershipResult: "MANUAL_ACCEPTED",
+      verifiedBy: admin._id,
+      verifiedAt: now,
+      verificationSource: "UMA_DEMO_MANUAL_REVIEW",
       validFrom: now,
       createdBy: admin._id,
       changedBy: admin._id
@@ -517,8 +559,8 @@ async function seedSuppliers(admin) {
     }
   ];
   const result = {};
-  for (const definition of definitions) {
-    result[definition.key] = await seedSupplier({ ...definition, admin });
+  for (const [index, definition] of definitions.entries()) {
+    result[definition.key] = await seedSupplier({ ...definition, supplierCode: `PRV-${String(index + 1).padStart(4, "0")}`, admin });
   }
 
   result.pending = {
@@ -544,6 +586,23 @@ async function seedSuppliers(admin) {
   return result;
 }
 
+async function seedEmployeeReimbursementBanking(users) {
+  await upsert(EmployeeReimbursementBankAccount, { user: users.solicitorHealth._id, active: true, preferred: true }, {
+    bank: "BCP",
+    currency: "PEN",
+    accountHolderName: users.solicitorHealth.name,
+    accountNumber: "1941000000001",
+    cci: "00219410000000000001",
+    verificationStatus: "VERIFIED",
+    verifiedBy: users.accounting._id,
+    verifiedAt: now,
+    verificationSource: "UMA_DEMO_MANUAL_REVIEW",
+    validFrom: now,
+    createdBy: users.admin._id,
+    changedBy: users.accounting._id
+  });
+}
+
 async function seedPeriodsAndRates(admin) {
   await upsert(AccountingPeriod, { period: currentPeriod }, {
     status: "OPEN",
@@ -551,6 +610,20 @@ async function seedPeriodsAndRates(admin) {
     openedBy: admin._id,
     comments: "Periodo abierto para la demostración integral UMA.",
     history: [{ action: "CREATED", at: now, by: admin._id, comments: "Periodo demo UMA." }]
+  });
+  await upsert(FinanceConfiguration, {
+    key: FINANCE_CONFIGURATION_KEYS.LOCAL_MOBILITY_DAILY_LIMIT,
+    effectiveFrom: new Date(Date.UTC(2026, 0, 1))
+  }, {
+    numericValue: 41,
+    currency: "PEN",
+    behavior: "WARNING",
+    effectiveTo: null,
+    active: true,
+    description: "Monto diario de movilidad local por colaborador; genera advertencia, no rechazo automático.",
+    source: "Formato_Rendicion_Gastos_UMA.xlsx, Rendición de Gastos, A12:E12",
+    createdBy: admin._id,
+    updatedBy: admin._id
   });
   await upsert(AccountingPeriod, { period: closedPeriod }, {
     status: "CLOSED",
@@ -652,7 +725,19 @@ async function seedRulesAndMappings({ costCenters, expenseTypes }) {
     ]]
   ];
   for (const [code, requestType, expenseNature, requirements] of documentRules) {
-    await upsert(DocumentRule, { code }, { requestType, expenseNature, requirements, active: true });
+    const quotationRequirement = requirements.find((item) => item.kind === "QUOTATION");
+    await upsert(DocumentRule, { code }, {
+      requestType,
+      expenseNature,
+      requirements,
+      quotationPolicy: {
+        enabled: Boolean(quotationRequirement),
+        minimumCount: quotationRequirement?.minCount || 3,
+        allowAuthorizedException: true,
+        exceptionReasonRequired: true
+      },
+      active: true
+    });
   }
 
   const mappings = [
@@ -1513,6 +1598,7 @@ async function seed() {
   await fs.mkdir(uploadRoot, { recursive: true });
   const costCenters = await seedCostCenters();
   const users = await seedUsers(costCenters);
+  await seedEmployeeReimbursementBanking(users);
   const expenseTypes = await seedExpenseTypes();
   const suppliers = await seedSuppliers(users.admin);
   await seedPeriodsAndRates(users.admin);
@@ -1521,6 +1607,11 @@ async function seed() {
   await Counter.updateOne(
     { key: "financial-request", year: Number(currentPeriod.slice(0, 4)) },
     { $max: { sequence: 30100 } },
+    { upsert: true }
+  );
+  await Counter.updateOne(
+    { key: "supplier", year: 0 },
+    { $max: { sequence: 5 } },
     { upsert: true }
   );
   await printSummary(users);

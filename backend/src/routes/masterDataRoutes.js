@@ -10,6 +10,7 @@ import {
   documentRules,
   exchangeRates,
   expenseTypes,
+  financeConfigurations,
   projects
 } from "../controllers/masterDataController.js";
 import { authorize, protect } from "../middleware/auth.js";
@@ -52,6 +53,12 @@ bindCrud(accountingMappingRouter, accountingMappings, [ROLES.ADMIN, ROLES.ACCOUN
 
 export const bankFormatRouter = Router();
 bindCrud(bankFormatRouter, bankFormats, [ROLES.ADMIN]);
+
+export const financeConfigurationRouter = Router();
+financeConfigurationRouter.get("/", protect, authorize(ROLES.ADMIN, ROLES.ACCOUNTING, ROLES.BUDGET), financeConfigurations.list);
+financeConfigurationRouter.post("/", protect, authorize(ROLES.ADMIN, ROLES.ACCOUNTING), financeConfigurations.create);
+financeConfigurationRouter.put("/:id", protect, authorize(ROLES.ADMIN, ROLES.ACCOUNTING), financeConfigurations.update);
+financeConfigurationRouter.delete("/:id", protect, authorize(ROLES.ADMIN, ROLES.ACCOUNTING), financeConfigurations.remove);
 
 export const accountingPeriodRouter = Router();
 accountingPeriodRouter.get("/", protect, accountingPeriods.list);

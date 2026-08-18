@@ -75,6 +75,73 @@ export async function configuredDocumentRequirements(request) {
   return mergeRequirements(rules.flatMap((rule) => rule.requirements));
 }
 
+export function defaultQuotationPolicy(request) {
+  const requirement = defaultDocumentRequirements(request).find((item) => item.kind === "QUOTATION");
+  return {
+    enabled: Boolean(requirement),
+    minimumCount: requirement?.minCount || 3,
+    allowAuthorizedException: true,
+    exceptionReasonRequired: true,
+    source: "DEFAULT_DOCUMENT_REQUIREMENTS"
+  };
+}
+
+export async function configuredQuotationPolicy(request) {
+  const requestType = canonicalType(request.requestType);
+  const expenseNature = canonicalNature(request.expenseNature);
+  const rules = await DocumentRule.find({
+    active: true,
+    requestType: { $in: ["*", requestType] },
+    expenseNature: { $in: ["*", expenseNature] }
+  }).sort({ requestType: 1, expenseNature: 1 });
+  if (!rules.length) return defaultQuotationPolicy(request);
+
+  const quotationMinimums = rules.flatMap((rule) => [
+    ...(rule.requirements || []).filter((item) => item.kind === "QUOTATION").map((item) => item.minCount),
+    ...(rule.quotationPolicy?.enabled ? [rule.quotationPolicy.minimumCount] : [])
+  ]);
+  if (!quotationMinimums.length) return { ...defaultQuotationPolicy(request), source: "CONFIGURED_DOCUMENT_RULES" };
+  return {
+    enabled: true,
+    minimumCount: Math.max(...quotationMinimums),
+    allowAuthorizedException: rules.every((rule) => rule.quotationPolicy?.allowAuthorizedException !== false),
+    exceptionReasonRequired: rules.some((rule) => rule.quotationPolicy?.exceptionReasonRequired !== false),
+    source: "CONFIGURED_DOCUMENT_RULES",
+    ruleCodes: rules.map((rule) => rule.code)
+  };
+}
+
+export function validateStructuredQuotationComparison(request, policy = defaultQuotationPolicy(request)) {
+  if (!policy.enabled) return { valid: true, applicable: false, policy, errors: [] };
+  const quotations = request.quotations || [];
+  const exception = request.quotationException || {};
+  const exceptionAccepted = Boolean(exception.authorized && policy.allowAuthorizedException);
+  const errors = [];
+  const supplierIds = quotations.map((quotation) => String(quotation.supplier?._id || quotation.supplier || "")).filter(Boolean);
+  const uniqueSupplierIds = new Set(supplierIds);
+  if (!exceptionAccepted && uniqueSupplierIds.size < policy.minimumCount) {
+    errors.push({
+      code: "QUOTATION_MINIMUM_NOT_MET",
+      required: policy.minimumCount,
+      present: uniqueSupplierIds.size
+    });
+  }
+  if (exceptionAccepted && policy.exceptionReasonRequired && !String(exception.reason || "").trim()) {
+    errors.push({ code: "QUOTATION_EXCEPTION_REASON_REQUIRED" });
+  }
+  if (quotations.some((quotation) => !quotation.supplier)) errors.push({ code: "QUOTATION_SUPPLIER_REQUIRED" });
+  if (quotations.some((quotation) => !quotation.attachment)) errors.push({ code: "QUOTATION_EVIDENCE_REQUIRED" });
+
+  const recommended = quotations.filter((quotation) => quotation.recommended);
+  if (recommended.length !== 1) errors.push({ code: "ONE_RECOMMENDED_QUOTATION_REQUIRED", present: recommended.length });
+  const selectedSupplier = String(request.supplier?._id || request.supplier || "");
+  if (recommended.length === 1 && String(recommended[0].supplier?._id || recommended[0].supplier || "") !== selectedSupplier) {
+    errors.push({ code: "RECOMMENDED_SUPPLIER_MISMATCH" });
+  }
+  if (!String(request.supplierSelectionReason || "").trim()) errors.push({ code: "SUPPLIER_SELECTION_REASON_REQUIRED" });
+  return { valid: errors.length === 0, applicable: true, policy, exceptionAccepted, errors };
+}
+
 export function validateDocumentRequirements(request, requirements) {
   const counts = (request.attachments || []).reduce((map, attachment) => {
     map.set(attachment.kind, (map.get(attachment.kind) || 0) + 1);
@@ -103,4 +170,3 @@ export async function assertConfiguredDocuments(request) {
   }
   return result;
 }
-

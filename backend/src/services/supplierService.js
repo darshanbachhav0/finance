@@ -3,8 +3,10 @@ import SupplierBankAccount from "../models/SupplierBankAccount.js";
 import { recordAudit } from "./auditService.js";
 import { cleanupUploadedFiles, persistUploadedFiles } from "./storageService.js";
 import { paginatedPayload, parsePagination, parseSort, escapedRegex } from "./queryService.js";
+import { nextSupplierCode } from "./sequenceService.js";
 import { AppError } from "../utils/AppError.js";
 import { ERROR_CODES, ROLES } from "../utils/constants.js";
+import { assertValidBankAccountNumber, assertValidCci } from "../utils/bankAccountValidation.js";
 
 const supplierDocumentKinds = Object.freeze({
   rucFile: "RUC_FILE",
@@ -22,6 +24,16 @@ export function assertSupplierIdentifier(value) {
     throw new AppError(422, "RUC must contain 11 digits or DNI must contain 8 digits.", { identifier: value }, ERROR_CODES.VALIDATION_ERROR);
   }
   return normalized;
+}
+
+function parseStructuredValue(value, field) {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value === "object") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    throw new AppError(422, `${field} must contain valid JSON.`, { field }, ERROR_CODES.VALIDATION_ERROR);
+  }
 }
 
 function mapUploadedDocuments(files, userId) {
@@ -67,16 +79,18 @@ export function assertSupplierUsable(supplier) {
 }
 
 export async function reusedBankWarnings({ supplierId, accountNumber, cci }) {
+  const normalizedAccount = accountNumber ? assertValidBankAccountNumber(accountNumber) : "";
+  const normalizedCci = cci ? assertValidCci(cci) : "";
   const conditions = [];
-  if (String(accountNumber || "").trim()) conditions.push({ accountNumber: String(accountNumber).trim() });
-  if (String(cci || "").trim()) conditions.push({ cci: String(cci).trim() });
+  if (normalizedAccount) conditions.push({ accountNumber: normalizedAccount });
+  if (normalizedCci) conditions.push({ cci: normalizedCci });
   if (!conditions.length) return [];
   const records = await SupplierBankAccount.find({
     supplier: { $ne: supplierId },
     $or: conditions
   }).populate("supplier", "rucDni name legalName");
   return records.map((record) => ({
-    code: record.cci === cci ? "CCI_REUSED" : "ACCOUNT_REUSED",
+    code: record.cci === normalizedCci ? "CCI_REUSED" : "ACCOUNT_REUSED",
     supplier: record.supplier?._id,
     supplierName: record.supplier?.legalName || record.supplier?.name,
     accountNumber: record.accountNumber,
@@ -85,24 +99,43 @@ export async function reusedBankWarnings({ supplierId, accountNumber, cci }) {
 }
 
 export async function replaceActiveBankAccount(supplier, payload, userId) {
+  const bankFieldsProvided = ["bankName", "bankAccount", "cci", "currency", "accountType", "accountHolderName"]
+    .some((field) => payload[field] !== undefined);
+  const existingActive = await SupplierBankAccount.findOne({ supplier: supplier._id, active: true }).sort({ validFrom: -1 });
+  if (!bankFieldsProvided && existingActive) return { account: existingActive, warnings: [] };
   const bank = String(payload.bankName ?? supplier.bankName ?? "").trim().toUpperCase();
-  const accountNumber = String(payload.bankAccount ?? supplier.bankAccount ?? "").trim();
-  const cci = String(payload.cci ?? supplier.cci ?? "").trim();
+  const rawAccountNumber = payload.bankAccount ?? supplier.bankAccount ?? "";
+  const rawCci = payload.cci ?? supplier.cci ?? "";
   const currency = payload.currency || supplier.currency || "PEN";
-  if (!bank || !accountNumber) return { account: null, warnings: [] };
+  if (!bank || !String(rawAccountNumber).trim()) return { account: null, warnings: [] };
+  let accountNumber;
+  let cci;
+  try {
+    accountNumber = assertValidBankAccountNumber(rawAccountNumber);
+    cci = assertValidCci(rawCci, { required: false });
+  } catch (error) {
+    if (bankFieldsProvided) throw error;
+    return {
+      account: null,
+      warnings: [{ code: "LEGACY_BANK_DETAILS_REVIEW_REQUIRED", message: error.message }]
+    };
+  }
+  const accountType = payload.accountType || "CURRENT";
+  const accountHolderName = String(payload.accountHolderName || supplier.legalName || supplier.name || "").trim();
 
-  const active = await SupplierBankAccount.findOne({ supplier: supplier._id, active: true });
-  const unchanged = active && active.bank === bank && active.accountNumber === accountNumber && active.cci === cci && active.currency === currency;
+  const active = existingActive;
+  const unchanged = active && active.bank === bank && active.accountNumber === accountNumber && active.cci === cci && active.currency === currency && active.accountType === accountType;
   if (unchanged) return { account: active, warnings: await reusedBankWarnings({ supplierId: supplier._id, accountNumber, cci }) };
 
   const now = new Date();
   await SupplierBankAccount.updateMany(
     { supplier: supplier._id, active: true },
-    { $set: { active: false, validTo: now, changedBy: userId } }
+    { $set: { active: false, preferred: false, validTo: now, changedBy: userId } }
   );
   for (const history of supplier.bankHistory || []) {
     if (history.status === "ACTIVE") {
       history.status = "INACTIVE";
+      history.preferred = false;
       history.validTo = now;
       history.changedAt = now;
       history.changedBy = userId;
@@ -112,9 +145,13 @@ export async function replaceActiveBankAccount(supplier, payload, userId) {
     supplier: supplier._id,
     bank,
     currency,
+    accountType,
+    accountHolderName,
     accountNumber,
     cci,
     active: true,
+    preferred: true,
+    verificationStatus: "PENDING",
     validFrom: now,
     createdBy: userId,
     changedBy: userId
@@ -122,7 +159,62 @@ export async function replaceActiveBankAccount(supplier, payload, userId) {
   supplier.bankName = bank;
   supplier.bankAccount = accountNumber;
   supplier.cci = cci;
-  supplier.bankHistory.push({ bankName: bank, currency, bankAccount: accountNumber, cci, status: "ACTIVE", validFrom: now, createdBy: userId, changedBy: userId });
+  supplier.bankHistory.push({
+    bankName: bank,
+    currency,
+    accountType,
+    accountHolderName,
+    bankAccount: accountNumber,
+    cci,
+    status: "ACTIVE",
+    preferred: true,
+    verificationStatus: "PENDING",
+    validFrom: now,
+    createdBy: userId,
+    changedBy: userId
+  });
+  return { account, warnings: await reusedBankWarnings({ supplierId: supplier._id, accountNumber, cci }) };
+}
+
+export async function addVerifiedSupplierBankAccount({ supplier, payload, user }) {
+  if (![ROLES.ADMIN, ROLES.ACCOUNTING].includes(user.role)) {
+    throw new AppError(403, "Only Accounting or Admin can verify supplier bank accounts.", undefined, ERROR_CODES.FORBIDDEN);
+  }
+  const accountNumber = assertValidBankAccountNumber(payload.accountNumber || payload.bankAccount);
+  const cci = assertValidCci(payload.cci, { required: false });
+  const preferred = payload.preferred === true || payload.preferred === "true";
+  if (preferred) {
+    await SupplierBankAccount.updateMany(
+      {
+        supplier: supplier._id,
+        currency: payload.currency || supplier.currency || "PEN",
+        accountType: payload.accountType || "CURRENT",
+        active: true,
+        preferred: true
+      },
+      { $set: { preferred: false, changedBy: user._id } }
+    );
+  }
+  const account = await SupplierBankAccount.create({
+    supplier: supplier._id,
+    bank: String(payload.bank || payload.bankName || "").trim().toUpperCase(),
+    currency: payload.currency || supplier.currency || "PEN",
+    accountType: payload.accountType || "CURRENT",
+    accountHolderName: payload.accountHolderName || supplier.legalName || supplier.name,
+    accountNumber,
+    cci,
+    active: true,
+    preferred,
+    verificationStatus: "VERIFIED",
+    ownershipResult: payload.ownershipResult || "MANUAL_ACCEPTED",
+    verifiedBy: user._id,
+    verifiedAt: new Date(),
+    verificationSource: payload.verificationSource || "AUTHORIZED_MANUAL_REVIEW",
+    verificationDocument: payload.verificationDocument,
+    verificationComments: payload.verificationComments,
+    createdBy: user._id,
+    changedBy: user._id
+  });
   return { account, warnings: await reusedBankWarnings({ supplierId: supplier._id, accountNumber, cci }) };
 }
 
@@ -139,13 +231,14 @@ export async function listSuppliersPage(queryParams) {
   if (queryParams.active !== undefined) query.active = queryParams.active === "true";
   if (queryParams.search) {
     const search = new RegExp(escapedRegex(queryParams.search), "i");
-    query.$or = [{ rucDni: search }, { normalizedIdentifier: search }, { name: search }, { legalName: search }];
+    query.$or = [{ supplierCode: search }, { rucDni: search }, { normalizedIdentifier: search }, { name: search }, { commercialName: search }, { legalName: search }];
   }
   const { page, pageSize, skip } = parsePagination(queryParams);
-  const sort = parseSort(queryParams, ["name", "legalName", "rucDni", "createdAt", "homologationStatus"], { legalName: 1, name: 1 });
+  const sort = parseSort(queryParams, ["supplierCode", "name", "commercialName", "legalName", "rucDni", "createdAt", "homologationStatus"], { legalName: 1, name: 1 });
   const [data, total] = await Promise.all([
     Supplier.find(query)
       .populate("compliance.validatedBy", "name email role")
+      .populate("complianceReview.reviewedBy", "name email role")
       .populate("reviewedBy", "name email role")
       .populate("documents.uploadedBy", "name email role")
       .sort(sort).skip(skip).limit(pageSize),
@@ -172,15 +265,26 @@ export async function createSupplierProposal({ payload, files, user, req }) {
     identifierType: identifier.length === 8 ? "DNI" : "RUC",
     rucDni: identifier,
     normalizedIdentifier: identifier,
+    personType: payload.personType,
     legalName: payload.legalName || payload.name,
+    commercialName: payload.commercialName || payload.name || payload.legalName,
     name: payload.name || payload.legalName,
     taxAddress: payload.taxAddress || payload.fiscalAddress,
     fiscalAddress: payload.fiscalAddress || payload.taxAddress,
+    location: parseStructuredValue(payload.location, "location"),
+    website: payload.website,
     legalRepresentative: payload.legalRepresentative,
+    legalRepresentativeDocument: parseStructuredValue(payload.legalRepresentativeDocument, "legalRepresentativeDocument"),
     email: payload.email,
     phone: payload.phone,
     contactName: payload.contactName,
+    commercialContact: parseStructuredValue(payload.commercialContact, "commercialContact"),
+    operationsContact: parseStructuredValue(payload.operationsContact, "operationsContact"),
     supplierType: payload.supplierType,
+    goodsServicesProfile: payload.goodsServicesProfile,
+    paymentTerms: parseStructuredValue(payload.paymentTerms, "paymentTerms"),
+    delivery: parseStructuredValue(payload.delivery, "delivery"),
+    declarations: parseStructuredValue(payload.declarations, "declarations"),
     currency: payload.currency,
     taxpayerStatus: "PENDING",
     complianceStatus: "PENDING",
@@ -219,8 +323,27 @@ export async function updateAndReviewSupplier({ supplierId, payload, files, user
   const oldValues = { homologationStatus: supplier.homologationStatus, active: supplier.active, bankName: supplier.bankName, bankAccount: supplier.bankAccount, cci: supplier.cci };
   const persistedFiles = await persistUploadedFiles(files, { domain: "suppliers", entityId: supplier._id });
   supplier.documents.push(...mapUploadedDocuments(persistedFiles, user._id));
-  const fields = ["legalName", "name", "taxAddress", "fiscalAddress", "legalRepresentative", "email", "phone", "contactName", "supplierType", "currency"];
+  const fields = [
+    "personType",
+    "legalName",
+    "commercialName",
+    "name",
+    "taxAddress",
+    "fiscalAddress",
+    "website",
+    "legalRepresentative",
+    "email",
+    "phone",
+    "contactName",
+    "supplierType",
+    "goodsServicesProfile",
+    "currency"
+  ];
   for (const field of fields) if (payload[field] !== undefined) supplier[field] = payload[field];
+  for (const field of ["location", "legalRepresentativeDocument", "commercialContact", "operationsContact", "paymentTerms", "delivery", "declarations"]) {
+    const value = parseStructuredValue(payload[field], field);
+    if (value !== undefined) supplier[field] = value;
+  }
 
   if (payload.taxpayerActive !== undefined || payload.taxpayerStatus) {
     const active = payload.taxpayerActive === true || payload.taxpayerActive === "true" || payload.taxpayerStatus === "ACTIVE" || payload.taxpayerStatus === "MANUALLY_VALIDATED";
@@ -235,14 +358,26 @@ export async function updateAndReviewSupplier({ supplierId, payload, files, user
   supplier.compliance.comments = payload.complianceComments ?? supplier.compliance.comments;
   supplier.compliance.validatedAt = new Date();
   supplier.compliance.validatedBy = user._id;
+  if (payload.complianceReview !== undefined || payload.complianceReviewResult !== undefined) {
+    const review = parseStructuredValue(payload.complianceReview, "complianceReview") || {};
+    supplier.complianceReview.result = payload.complianceReviewResult || review.result || supplier.complianceReview.result;
+    supplier.complianceReview.comments = review.comments ?? payload.complianceComments ?? supplier.complianceReview.comments;
+    supplier.complianceReview.reviewedBy = user._id;
+    supplier.complianceReview.reviewedAt = new Date();
+  }
 
   const bankResult = await replaceActiveBankAccount(supplier, payload, user._id);
   const requestedHomologation = payload.homologationStatus === "HOMOLOGATED" || payload.status === "ACTIVE";
   const requestedObserved = payload.homologationStatus === "OBSERVED" || payload.status === "OBSERVED";
+  const requestedRejected = payload.homologationStatus === "REJECTED" || payload.status === "REJECTED";
   const requestedInactive = payload.homologationStatus === "INACTIVE" || payload.status === "INACTIVE";
   if (requestedHomologation) {
     if (![ROLES.ADMIN, ROLES.ACCOUNTING].includes(user.role)) throw new AppError(403, "Only Accounting or Admin can homologate suppliers.", undefined, ERROR_CODES.FORBIDDEN);
     assertSupplierCanBeHomologated(supplier);
+    if (!bankResult.account) {
+      throw new AppError(422, "A normalized supplier bank account is required for homologation.", { warnings: bankResult.warnings }, ERROR_CODES.VALIDATION_ERROR);
+    }
+    supplier.supplierCode ||= await nextSupplierCode();
     supplier.homologationStatus = "HOMOLOGATED";
     supplier.active = true;
     supplier.status = "ACTIVE";
@@ -250,6 +385,10 @@ export async function updateAndReviewSupplier({ supplierId, payload, files, user
     supplier.homologationStatus = "OBSERVED";
     supplier.active = false;
     supplier.status = "OBSERVED";
+  } else if (requestedRejected) {
+    supplier.homologationStatus = "REJECTED";
+    supplier.active = false;
+    supplier.status = "REJECTED";
   } else if (requestedInactive) {
     supplier.homologationStatus = "INACTIVE";
     supplier.active = false;
@@ -258,11 +397,30 @@ export async function updateAndReviewSupplier({ supplierId, payload, files, user
   supplier.reviewedBy = user._id;
   supplier.reviewedAt = new Date();
   supplier.reviewComments = payload.reviewComments || payload.complianceComments || supplier.reviewComments;
+  if (requestedHomologation && bankResult.account) {
+    bankResult.account.verificationStatus = "VERIFIED";
+    bankResult.account.ownershipResult = payload.ownershipResult || "MANUAL_ACCEPTED";
+    bankResult.account.verifiedBy = user._id;
+    bankResult.account.verifiedAt = new Date();
+    bankResult.account.verificationSource = payload.verificationSource || "ACCOUNTING_HOMOLOGATION";
+    bankResult.account.verificationDocument = payload.verificationDocument;
+    bankResult.account.verificationComments = payload.verificationComments || supplier.reviewComments || "";
+    await bankResult.account.save();
+    const activeHistory = [...(supplier.bankHistory || [])].reverse().find((item) => item.status === "ACTIVE");
+    if (activeHistory) {
+      activeHistory.verificationStatus = bankResult.account.verificationStatus;
+      activeHistory.ownershipResult = bankResult.account.ownershipResult;
+      activeHistory.verifiedBy = user._id;
+      activeHistory.verifiedAt = bankResult.account.verifiedAt;
+      activeHistory.verificationSource = bankResult.account.verificationSource;
+      activeHistory.verificationDocument = bankResult.account.verificationDocument;
+    }
+  }
   await supplier.save();
   await recordAudit({
     entityType: "Supplier",
     entity: supplier,
-    action: requestedHomologation ? "HOMOLOGATED" : requestedObserved ? "OBSERVED" : requestedInactive ? "DEACTIVATED" : "UPDATED",
+    action: requestedHomologation ? "HOMOLOGATED" : requestedObserved ? "OBSERVED" : requestedRejected ? "REJECTED" : requestedInactive ? "DEACTIVATED" : "UPDATED",
     user,
     req,
     module: "SUPPLIERS",

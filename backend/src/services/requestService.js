@@ -36,6 +36,7 @@ export const requestPopulate = [
   { path: "requesterCostCenter" },
   { path: "lines.costCenter" },
   { path: "lines.expenseType" },
+  { path: "quotations.supplier", select: "supplierCode name commercialName legalName rucDni normalizedIdentifier homologationStatus" },
   { path: "approvalHistory.actor", select: "name email role approvalLevel" },
   { path: "approvalRouteSnapshot.completedBy", select: "name email role approvalLevel" },
   { path: "budgetCommitment" },
@@ -51,13 +52,13 @@ export const requestPopulate = [
 
 export const requestListSelect = [
   "requestNumber", "issueDate", "accountingPeriod", "requester", "solicitor", "requesterArea", "requestingArea",
-  "schoolOrDepartment", "requestType", "expenseNature", "priority", "project", "currency", "exchangeRate",
+  "schoolOrDepartment", "requestType", "expenseNature", "priority", "project", "areaCorrelative", "title", "currency", "exchangeRate",
   "totalNet", "totalIGV", "totalAmount", "totalPENEquivalent", "supplier", "supplierSnapshot", "status",
   "description", "approvalStage", "approvalDueAt", "createdAt", "updatedAt"
 ].join(" ");
 
 export const requestListPopulate = [
-  { path: "supplier", select: "name legalName rucDni normalizedIdentifier homologationStatus active" },
+  { path: "supplier", select: "supplierCode name commercialName legalName rucDni normalizedIdentifier homologationStatus active" },
   { path: "requester", select: "name email role area" },
   { path: "solicitor", select: "name email role area" }
 ];
@@ -92,6 +93,10 @@ export function parseRequestLines(value) {
   const parsed = parseJson(value, "lines") || [];
   if (!Array.isArray(parsed)) throw new AppError(400, "lines must be an array.", { field: "lines" }, ERROR_CODES.VALIDATION_ERROR);
   return parsed.map((line) => ({
+    itemDescription: line.itemDescription || "",
+    quantity: line.quantity === "" || line.quantity === undefined || line.quantity === null ? undefined : Number(line.quantity),
+    unitOfMeasure: line.unitOfMeasure || "",
+    unitPrice: line.unitPrice === "" || line.unitPrice === undefined || line.unitPrice === null ? undefined : Number(line.unitPrice),
     costCenter: line.costCenter?._id || line.costCenter,
     expenseType: line.expenseType?._id || line.expenseType,
     budgetItem: line.budgetItem || line.budgetItemId || "",
@@ -100,6 +105,21 @@ export function parseRequestLines(value) {
     netAmount: Number(line.netAmount ?? line.net ?? 0),
     igvAmount: Number(line.igvAmount ?? line.igv ?? 0),
     totalAmount: Number(line.totalAmount ?? line.total ?? 0)
+  }));
+}
+
+function parseQuotations(value) {
+  const parsed = parseJson(value, "quotations") || [];
+  if (!Array.isArray(parsed)) throw new AppError(400, "quotations must be an array.", { field: "quotations" }, ERROR_CODES.VALIDATION_ERROR);
+  return parsed.map((quotation) => ({
+    supplier: quotation.supplier?._id || quotation.supplier,
+    amount: quotation.amount === "" || quotation.amount === undefined || quotation.amount === null ? undefined : Number(quotation.amount),
+    currency: quotation.currency,
+    deliveryPeriod: quotation.deliveryPeriod || "",
+    paymentConditions: quotation.paymentConditions || "",
+    commercialConditions: quotation.commercialConditions || "",
+    attachment: quotation.attachment?._id || quotation.attachment,
+    recommended: parseBoolean(quotation.recommended)
   }));
 }
 
@@ -128,6 +148,22 @@ function supplierSnapshot(supplier) {
   };
 }
 
+async function applyQuotationSnapshots(request) {
+  const supplierIds = (request.quotations || []).map((quotation) => quotation.supplier?._id || quotation.supplier).filter(Boolean);
+  if (!supplierIds.length) return;
+  const suppliers = await Supplier.find({ _id: { $in: supplierIds } }).select("identifierType normalizedIdentifier rucDni legalName name");
+  const byId = new Map(suppliers.map((supplier) => [String(supplier._id), supplier]));
+  for (const quotation of request.quotations || []) {
+    const supplier = byId.get(String(quotation.supplier?._id || quotation.supplier || ""));
+    if (!supplier) continue;
+    quotation.supplierSnapshot = {
+      identifierType: supplier.identifierType,
+      identifier: supplier.normalizedIdentifier || supplier.rucDni,
+      legalName: supplier.legalName || supplier.name
+    };
+  }
+}
+
 function applyEditableFields(request, payload) {
   const fields = [
     "requestType",
@@ -135,6 +171,12 @@ function applyEditableFields(request, payload) {
     "priority",
     "schoolOrDepartment",
     "project",
+    "areaCorrelative",
+    "title",
+    "detailedDescription",
+    "businessJustification",
+    "nonApprovalRisk",
+    "supplierSelectionReason",
     "issueDate",
     "accountingPeriod",
     "currency",
@@ -142,6 +184,9 @@ function applyEditableFields(request, payload) {
     "description"
   ];
   for (const field of fields) if (payload[field] !== undefined) request[field] = payload[field];
+  if (payload.capexDetails !== undefined) request.capexDetails = parseJson(payload.capexDetails, "capexDetails") || {};
+  if (payload.opexDetails !== undefined) request.opexDetails = parseJson(payload.opexDetails, "opexDetails") || {};
+  if (payload.quotations !== undefined) request.quotations = parseQuotations(payload.quotations);
 }
 
 async function prepareRequest(request, { user, files = {}, validateSubmission = false }) {
@@ -155,6 +200,7 @@ async function prepareRequest(request, { user, files = {}, validateSubmission = 
   const supplier = await Supplier.findById(request.supplier?._id || request.supplier);
   if (!supplier) throw new AppError(404, "Supplier not found.", { supplier: request.supplier }, ERROR_CODES.NOT_FOUND);
   request.supplierSnapshot = supplierSnapshot(supplier);
+  await applyQuotationSnapshots(request);
   request.requesterCostCenter ||= user.costCenter;
   await applyExchangeRate(request);
   await request.validate();
@@ -242,6 +288,8 @@ export async function listRequestsPage(queryParams, user) {
     ]);
     query.$and = [...(query.$and || []), { $or: [
       { requestNumber: search },
+      { areaCorrelative: search },
+      { title: search },
       { description: search },
       { requesterArea: search },
       { requestingArea: search },
@@ -296,6 +344,15 @@ export async function createFinancialRequest({ payload, files, user, req }) {
     currency: payload.currency,
     supplier: payload.supplier,
     description: payload.description,
+    areaCorrelative: payload.areaCorrelative,
+    title: payload.title,
+    detailedDescription: payload.detailedDescription,
+    businessJustification: payload.businessJustification,
+    nonApprovalRisk: payload.nonApprovalRisk,
+    capexDetails: parseJson(payload.capexDetails, "capexDetails") || {},
+    opexDetails: parseJson(payload.opexDetails, "opexDetails") || {},
+    quotations: parseQuotations(payload.quotations),
+    supplierSelectionReason: payload.supplierSelectionReason,
     lines,
     draftSavedAt: new Date()
   });

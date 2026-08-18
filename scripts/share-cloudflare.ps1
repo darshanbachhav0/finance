@@ -9,7 +9,7 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $tempDirectory = Join-Path $projectRoot ".tmp"
 $stateFile = Join-Path $tempDirectory "cloudflare-share.json"
-$localUrl = "http://localhost:5050"
+$localUrl = "http://localhost:5174"
 
 function Test-ErpServer {
   try {
@@ -97,6 +97,8 @@ function Get-ManagedTunnelProcess($state) {
 }
 
 function Stop-ManagedTunnel {
+  param([switch]$StopServer)
+
   $state = Read-TunnelState
   $process = Get-ManagedTunnelProcess $state
 
@@ -104,6 +106,14 @@ function Stop-ManagedTunnel {
     Stop-Process -Id $process.Id -Force
     $process.WaitForExit()
     Write-Host "Cloudflare sharing stopped." -ForegroundColor Yellow
+  }
+
+  if ($StopServer -and $state -and $state.serverPid) {
+    $serverProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $($state.serverPid)" -ErrorAction SilentlyContinue
+    if ($serverProcess -and $serverProcess.Name -eq "node.exe" -and $serverProcess.CommandLine -match "public-server\.js") {
+      Stop-Process -Id $state.serverPid -Force -ErrorAction SilentlyContinue
+      Write-Host "Managed ERP production server stopped." -ForegroundColor Yellow
+    }
   }
 
   if (Test-Path -LiteralPath $stateFile) {
@@ -136,12 +146,12 @@ if ($Action -eq "status") {
 }
 
 if ($Action -eq "stop") {
-  Stop-ManagedTunnel
+  Stop-ManagedTunnel -StopServer
   exit 0
 }
 
 New-Item -ItemType Directory -Path $tempDirectory -Force | Out-Null
-Stop-ManagedTunnel
+Stop-ManagedTunnel -StopServer
 
 $cloudflared = Get-CloudflaredPath
 if (-not $cloudflared) {
@@ -270,7 +280,7 @@ Write-Host "Stop public sharing:  npm run share:stop"
 Write-Host "Publish this link to Render: npm run link:publish"
 Write-Host ""
 Write-Host "For phones and other computers, share only the green HTTPS link above." -ForegroundColor Cyan
-Write-Host "Do not share localhost, port 5050, or a 192.168.x.x address; those work only locally."
+Write-Host "Do not share localhost, port 5174 , or a 192.168.x.x address; those work only locally."
 Write-Host "If a device reports DNS not found, try mobile data or Cloudflare DNS 1.1.1.1."
 Write-Host ""
 Write-Host "Keep this PC, MongoDB, and the ERP server running." -ForegroundColor Yellow

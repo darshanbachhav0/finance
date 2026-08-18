@@ -4,3 +4,4 @@ import "./exchangeRateProvider.test.js";
 import "./workflowIntegration.test.js";
 import "./domainFoundation.test.js";
 import "./financialLifecycle.test.js";
+import "./officialFormatsFoundation.test.js";

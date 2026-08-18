@@ -4,6 +4,7 @@ import { APPROVAL_STAGES, PERMISSIONS, ROLES } from "../utils/constants.js";
 
 const userSchema = new mongoose.Schema(
   {
+    employeeCode: { type: String, trim: true, uppercase: true, unique: true, sparse: true },
     name: { type: String, required: true, trim: true },
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     passwordHash: { type: String, required: true },

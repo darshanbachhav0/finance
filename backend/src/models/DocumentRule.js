@@ -16,6 +16,12 @@ const documentRuleSchema = new mongoose.Schema(
     requestType: { type: String, enum: ["*", ...REQUEST_TYPES], default: "*" },
     expenseNature: { type: String, enum: ["*", ...EXPENSE_NATURES], default: "*" },
     requirements: { type: [documentRequirementSchema], default: [] },
+    quotationPolicy: {
+      enabled: { type: Boolean, default: false },
+      minimumCount: { type: Number, min: 1, default: 3 },
+      allowAuthorizedException: { type: Boolean, default: true },
+      exceptionReasonRequired: { type: Boolean, default: true }
+    },
     active: { type: Boolean, default: true }
   },
   { timestamps: true }
@@ -24,4 +30,3 @@ const documentRuleSchema = new mongoose.Schema(
 documentRuleSchema.index({ active: 1, requestType: 1, expenseNature: 1 });
 
 export default mongoose.model("DocumentRule", documentRuleSchema);
-

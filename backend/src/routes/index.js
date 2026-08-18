@@ -24,6 +24,7 @@ import {
   documentRuleRouter,
   exchangeRateRouter,
   expenseTypeRouter,
+  financeConfigurationRouter,
   projectRouter
 } from "./masterDataRoutes.js";
 
@@ -52,6 +53,7 @@ router.use("/budget-allocations", budgetAllocationRouter);
 router.use("/document-rules", documentRuleRouter);
 router.use("/accounting-mappings", accountingMappingRouter);
 router.use("/bank-formats", bankFormatRouter);
+router.use("/finance-configurations", financeConfigurationRouter);
 router.use("/sire", sireRoutes);
 router.use("/users", userRoutes);
 

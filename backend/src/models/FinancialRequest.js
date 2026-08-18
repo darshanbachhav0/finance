@@ -1,6 +1,8 @@
 import mongoose from "mongoose";
 import {
+  ACKNOWLEDGMENT_TYPES,
   APPROVAL_STAGES,
+  CAPEX_ASSET_CATEGORIES,
   CANONICAL_REQUEST_STATUSES,
   CURRENCY,
   EXPENSE_NATURE,
@@ -8,15 +10,23 @@ import {
   LEGACY_EXPENSE_NATURE_MAP,
   LEGACY_REQUEST_TYPE_MAP,
   LEGACY_STATUS_MAP,
+  OPEX_EXPENSE_FREQUENCIES,
+  PAYBACK_UNITS,
+  RENDITION_LINE_TYPES,
   REQUEST_PRIORITIES,
   REQUEST_STATUS,
   REQUEST_TYPES
 } from "../utils/constants.js";
-import { assertLineTotal, multiplyMoney, roundMoney, sumMoney } from "../utils/money.js";
+import { assertLineTotal, moneyEquals, multiplyMoney, roundMoney, subtractMoney, sumMoney } from "../utils/money.js";
 import { nextRequestNumber } from "../services/sequenceService.js";
 
 const lineSchema = new mongoose.Schema(
   {
+    itemDescription: { type: String, trim: true, default: "" },
+    quantity: { type: Number, min: 0 },
+    unitOfMeasure: { type: String, trim: true, default: "" },
+    unitPrice: { type: Number, min: 0 },
+    commercialTotal: { type: Number, min: 0, default: 0 },
     costCenter: { type: mongoose.Schema.Types.ObjectId, ref: "CostCenter", required: true },
     expenseType: { type: mongoose.Schema.Types.ObjectId, ref: "ExpenseType", required: true },
     budgetItem: { type: String, trim: true, default: "" },
@@ -41,6 +51,47 @@ const lineSchema = new mongoose.Schema(
     igvAmount: { type: Number, required: true, min: 0 },
     totalAmount: { type: Number, required: true, min: 0 },
     penEquivalent: { type: Number, default: 0, min: 0 }
+  },
+  { _id: true }
+);
+
+const quotationSchema = new mongoose.Schema(
+  {
+    supplier: { type: mongoose.Schema.Types.ObjectId, ref: "Supplier" },
+    supplierSnapshot: {
+      identifierType: String,
+      identifier: String,
+      legalName: String
+    },
+    amount: { type: Number, min: 0 },
+    currency: { type: String, enum: CURRENCY, default: "PEN" },
+    deliveryPeriod: { type: String, trim: true, default: "" },
+    paymentConditions: { type: String, trim: true, default: "" },
+    commercialConditions: { type: String, trim: true, default: "" },
+    attachment: { type: mongoose.Schema.Types.ObjectId },
+    recommended: { type: Boolean, default: false }
+  },
+  { _id: true }
+);
+
+const mobilityLineSchema = new mongoose.Schema(
+  {
+    date: Date,
+    origin: { type: String, trim: true, default: "" },
+    destination: { type: String, trim: true, default: "" },
+    servicePurpose: { type: String, trim: true, default: "" },
+    amount: { type: Number, min: 0, default: 0 },
+    limitExceeded: { type: Boolean, default: false }
+  },
+  { _id: true }
+);
+
+const unsupportedExpenseLineSchema = new mongoose.Schema(
+  {
+    date: Date,
+    description: { type: String, trim: true, default: "" },
+    goodsServiceType: { type: String, enum: RENDITION_LINE_TYPES },
+    grossAmount: { type: Number, min: 0, default: 0 }
   },
   { _id: true }
 );
@@ -149,6 +200,7 @@ const financialRequestSchema = new mongoose.Schema(
   {
     developmentScenarioKey: { type: String, sparse: true, unique: true, immutable: true },
     requestNumber: { type: String, required: true, unique: true, immutable: true, match: /^(SOL|REQ)-\d{4}-\d{5,7}$/ },
+    areaCorrelative: { type: String, trim: true, index: true },
     issueDate: { type: Date, required: true },
     accountingPeriod: { type: String, required: true, match: /^\d{4}-\d{2}$/ },
     requester: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
@@ -166,6 +218,31 @@ const financialRequestSchema = new mongoose.Schema(
     expenseNature: { type: String, enum: EXPENSE_NATURES, default: EXPENSE_NATURE.SERVICES, set: (value) => LEGACY_EXPENSE_NATURE_MAP[value] || value },
     priority: { type: String, enum: REQUEST_PRIORITIES, default: "MEDIA" },
     project: { type: String, trim: true },
+    title: { type: String, trim: true, default: "" },
+    detailedDescription: { type: String, trim: true, default: "" },
+    businessJustification: { type: String, trim: true, default: "" },
+    nonApprovalRisk: { type: String, trim: true, default: "" },
+    capexDetails: {
+      projectPep: { type: String, trim: true, default: "" },
+      projectSnapshot: {
+        id: { type: mongoose.Schema.Types.ObjectId, ref: "Project" },
+        code: String,
+        name: String
+      },
+      assetCategory: { type: String, enum: CAPEX_ASSET_CATEGORIES },
+      usefulLifeYears: { type: Number, min: 0 },
+      npv: {
+        amount: { type: Number },
+        currency: { type: String, enum: CURRENCY }
+      },
+      payback: {
+        value: { type: Number, min: 0 },
+        unit: { type: String, enum: PAYBACK_UNITS }
+      }
+    },
+    opexDetails: {
+      expenseFrequency: { type: String, enum: OPEX_EXPENSE_FREQUENCIES }
+    },
     currency: { type: String, enum: CURRENCY, required: true },
     sourceCurrencyAmount: { type: Number, default: 0, min: 0 },
     exchangeRate: { type: Number, default: 1, min: 0 },
@@ -178,6 +255,9 @@ const financialRequestSchema = new mongoose.Schema(
     netAmount: { type: Number, default: 0, min: 0 },
     igvAmount: { type: Number, default: 0, min: 0 },
     penEquivalent: { type: Number, default: 0, min: 0 },
+    totalCommercialAmount: { type: Number, default: 0, min: 0 },
+    commercialTotalDifference: { type: Number, default: 0 },
+    commercialTotalStatus: { type: String, enum: ["NOT_APPLICABLE", "INCOMPLETE", "MATCH", "MISMATCH"], default: "NOT_APPLICABLE" },
     supplier: { type: mongoose.Schema.Types.ObjectId, ref: "Supplier", required: true },
     supplierSnapshot: {
       identifierType: String,
@@ -187,6 +267,15 @@ const financialRequestSchema = new mongoose.Schema(
     },
     status: { type: String, enum: CANONICAL_REQUEST_STATUSES, default: REQUEST_STATUS.DRAFT, index: true, set: (value) => LEGACY_STATUS_MAP[value] || value },
     description: { type: String, required: true, trim: true },
+    quotations: { type: [quotationSchema], default: [] },
+    supplierSelectionReason: { type: String, trim: true, default: "" },
+    quotationException: {
+      authorized: { type: Boolean, default: false },
+      authorizedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+      authorizedAt: Date,
+      reason: { type: String, trim: true, default: "" },
+      ruleCode: { type: String, trim: true, default: "" }
+    },
     lines: {
       type: [lineSchema],
       validate: { validator: (lines) => Array.isArray(lines) && lines.length > 0, message: "At least one request line is required." }
@@ -237,6 +326,68 @@ const financialRequestSchema = new mongoose.Schema(
       reconciliationComments: String
     },
     rendition: {
+      number: { type: String, match: /^RG-\d{4}-\d{5,7}$/ },
+      beneficiarySnapshot: {
+        user: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        employeeCode: { type: String, trim: true, uppercase: true },
+        name: { type: String, trim: true },
+        email: { type: String, trim: true, lowercase: true },
+        area: { type: String, trim: true },
+        costCenter: { type: mongoose.Schema.Types.ObjectId, ref: "CostCenter" },
+        costCenterCode: String,
+        costCenterName: String
+      },
+      mobilityLines: { type: [mobilityLineSchema], default: [] },
+      unsupportedExpenseLines: { type: [unsupportedExpenseLineSchema], default: [] },
+      mobilitySubtotal: { type: Number, default: 0, min: 0 },
+      unsupportedExpenseSubtotal: { type: Number, default: 0, min: 0 },
+      reimbursementTotal: { type: Number, default: 0, min: 0 },
+      detailReconciliation: {
+        accountingRenderedAmount: { type: Number, default: 0 },
+        difference: { type: Number, default: 0 },
+        status: { type: String, enum: ["NOT_APPLICABLE", "MATCH", "MISMATCH"], default: "NOT_APPLICABLE" }
+      },
+      unsupportedExpenseDeclaration: {
+        confirmedExceptionalUse: { type: Boolean, default: false },
+        comments: { type: String, trim: true, default: "" },
+        declaredAt: Date
+      },
+      financeReview: {
+        result: { type: String, enum: ["PENDING", "APPROVED", "OBSERVED", "REJECTED"], default: "PENDING" },
+        reviewer: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        reviewedAt: Date,
+        comments: { type: String, trim: true, default: "" }
+      },
+      beneficiaryAcknowledgment: {
+        type: { type: String, enum: ACKNOWLEDGMENT_TYPES },
+        signer: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        signerName: { type: String, trim: true },
+        signedAt: Date,
+        ip: { type: String, trim: true },
+        reference: { type: String, trim: true },
+        attachment: { type: mongoose.Schema.Types.ObjectId }
+      },
+      reimbursementBankSnapshot: {
+        profile: { type: mongoose.Schema.Types.ObjectId, ref: "EmployeeReimbursementBankAccount" },
+        bank: String,
+        currency: { type: String, enum: CURRENCY },
+        accountHolderName: { type: String, select: false },
+        accountNumber: { type: String, select: false },
+        cci: { type: String, select: false },
+        verificationStatus: String,
+        capturedAt: Date
+      },
+      limitEvaluation: {
+        configuration: { type: mongoose.Schema.Types.ObjectId, ref: "FinanceConfiguration" },
+        key: { type: String, trim: true },
+        configuredValue: Number,
+        currency: { type: String, enum: CURRENCY },
+        effectiveFrom: Date,
+        effectiveTo: Date,
+        behavior: { type: String, enum: ["INFORMATION", "WARNING", "FLAG", "BLOCK"] },
+        evaluatedAt: Date,
+        exceededLineCount: { type: Number, default: 0, min: 0 }
+      },
       amountAdvanced: { type: Number, default: 0, min: 0 },
       amountRendered: { type: Number, default: 0, min: 0 },
       amountReturned: { type: Number, default: 0, min: 0 },
@@ -267,6 +418,8 @@ financialRequestSchema.pre("validate", async function beforeValidate() {
   if (!this.requesterArea) this.requesterArea = this.requestingArea;
   if (!this.requestingArea) this.requestingArea = this.requesterArea;
 
+  let commercialLineCount = 0;
+  let incompleteCommercialLine = false;
   for (const [index, line] of (this.lines || []).entries()) {
     line.netAmount = roundMoney(line.netAmount);
     line.igvAmount = roundMoney(line.igvAmount);
@@ -275,6 +428,17 @@ financialRequestSchema.pre("validate", async function beforeValidate() {
     line.currency ||= this.currency;
     line.exchangeRate ||= this.exchangeRate || 1;
     line.penEquivalent = roundMoney(line.penEquivalent || multiplyMoney(line.totalAmount, line.exchangeRate));
+
+    const hasQuantity = line.quantity !== null && line.quantity !== undefined;
+    const hasUnitPrice = line.unitPrice !== null && line.unitPrice !== undefined;
+    if (hasQuantity && hasUnitPrice) {
+      line.unitPrice = roundMoney(line.unitPrice);
+      line.commercialTotal = multiplyMoney(line.unitPrice, line.quantity);
+      commercialLineCount += 1;
+    } else {
+      line.commercialTotal = 0;
+      if (hasQuantity || hasUnitPrice || line.itemDescription || line.unitOfMeasure) incompleteCommercialLine = true;
+    }
   }
 
   this.totalNet = sumMoney((this.lines || []).map((line) => line.netAmount));
@@ -285,12 +449,56 @@ financialRequestSchema.pre("validate", async function beforeValidate() {
   this.netAmount = this.totalNet;
   this.igvAmount = this.totalIGV;
   this.penEquivalent = this.totalPENEquivalent;
+
+  this.totalCommercialAmount = sumMoney((this.lines || []).map((line) => line.commercialTotal));
+  this.commercialTotalDifference = subtractMoney(this.totalCommercialAmount, this.totalAmount);
+  if (!commercialLineCount && !incompleteCommercialLine) this.commercialTotalStatus = "NOT_APPLICABLE";
+  else if (incompleteCommercialLine || commercialLineCount !== (this.lines || []).length) this.commercialTotalStatus = "INCOMPLETE";
+  else this.commercialTotalStatus = moneyEquals(this.totalCommercialAmount, this.totalAmount) ? "MATCH" : "MISMATCH";
+
+  const mobilityLines = this.rendition?.mobilityLines || [];
+  const unsupportedLines = this.rendition?.unsupportedExpenseLines || [];
+  for (const line of mobilityLines) line.amount = roundMoney(line.amount);
+  for (const line of unsupportedLines) line.grossAmount = roundMoney(line.grossAmount);
+  if (this.rendition) {
+    this.rendition.mobilitySubtotal = sumMoney(mobilityLines.map((line) => line.amount));
+    this.rendition.unsupportedExpenseSubtotal = sumMoney(unsupportedLines.map((line) => line.grossAmount));
+    this.rendition.reimbursementTotal = sumMoney([
+      this.rendition.mobilitySubtotal,
+      this.rendition.unsupportedExpenseSubtotal
+    ]);
+    const hasOfficialDetails = mobilityLines.length > 0 || unsupportedLines.length > 0;
+    this.rendition.detailReconciliation.accountingRenderedAmount = roundMoney(this.rendition.amountRendered);
+    this.rendition.detailReconciliation.difference = subtractMoney(
+      this.rendition.reimbursementTotal,
+      this.rendition.amountRendered
+    );
+    this.rendition.detailReconciliation.status = hasOfficialDetails
+      ? (moneyEquals(this.rendition.reimbursementTotal, this.rendition.amountRendered) ? "MATCH" : "MISMATCH")
+      : "NOT_APPLICABLE";
+  }
+});
+
+financialRequestSchema.pre("save", async function protectAssignedRenditionNumber() {
+  if (this.isNew || !this.isModified("rendition.number")) return;
+  const stored = await this.constructor.findById(this._id).select("rendition.number").lean();
+  if (stored?.rendition?.number && stored.rendition.number !== this.rendition?.number) {
+    throw new Error("Rendition number is immutable after assignment.");
+  }
 });
 
 financialRequestSchema.index({ accountingPeriod: 1, status: 1, createdAt: -1 });
 financialRequestSchema.index({ requester: 1, createdAt: -1 });
 financialRequestSchema.index({ solicitor: 1, createdAt: -1 });
 financialRequestSchema.index({ supplier: 1, createdAt: -1 });
+financialRequestSchema.index(
+  { "rendition.number": 1 },
+  {
+    unique: true,
+    partialFilterExpression: { "rendition.number": { $type: "string" } },
+    name: "rendition_number_unique"
+  }
+);
 financialRequestSchema.index({ approvalStage: 1, status: 1, approvalDueAt: 1 });
 financialRequestSchema.index(
   {

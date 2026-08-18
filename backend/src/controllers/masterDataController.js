@@ -8,6 +8,7 @@ import CostCenter from "../models/CostCenter.js";
 import DocumentRule from "../models/DocumentRule.js";
 import ExchangeRate from "../models/ExchangeRate.js";
 import ExpenseType from "../models/ExpenseType.js";
+import FinanceConfiguration from "../models/FinanceConfiguration.js";
 import Project from "../models/Project.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { recordAudit } from "../services/auditService.js";
@@ -51,6 +52,7 @@ function resourceController({ Model, label, fields, searchFields = [], sortField
         payload.providerMode ||= "MANUAL";
         payload.authoritative = payload.providerMode === "SUNAT" && payload.authoritative === true;
       }
+      if (Model === FinanceConfiguration) payload.createdBy = req.user._id;
       const data = await Model.create(payload);
       await recordAudit({ entityType: label, entity: data, action: "CREATED", user: req.user, req, module: "MASTER_DATA", newValues: data.toObject() });
       res.status(201).json({ data });
@@ -65,6 +67,7 @@ function resourceController({ Model, label, fields, searchFields = [], sortField
         payload.date = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
         payload.period = payload.period || payload.date.toISOString().slice(0, 7);
       }
+      if (Model === FinanceConfiguration) payload.updatedBy = req.user._id;
       Object.assign(data, payload);
       await data.save();
       await recordAudit({ entityType: label, entity: data, action: "UPDATED", user: req.user, req, module: "MASTER_DATA", oldValues, newValues: data.toObject() });
@@ -166,7 +169,7 @@ export const budgetAllocations = resourceController({
 export const documentRules = resourceController({
   Model: DocumentRule,
   label: "DocumentRule",
-  fields: ["code", "requestType", "expenseNature", "requirements", "active"],
+  fields: ["code", "requestType", "expenseNature", "requirements", "quotationPolicy", "active"],
   searchFields: ["code", "requestType", "expenseNature"],
   sortFields: ["code", "requestType", "expenseNature", "active"],
   defaultSort: { code: 1 }
@@ -188,6 +191,19 @@ export const bankFormats = resourceController({
   searchFields: ["bank", "specificationVersion", "notes"],
   sortFields: ["bank", "currency", "mode", "active"],
   defaultSort: { bank: 1, currency: 1 }
+});
+
+export const financeConfigurations = resourceController({
+  Model: FinanceConfiguration,
+  label: "FinanceConfiguration",
+  fields: ["key", "numericValue", "currency", "behavior", "effectiveFrom", "effectiveTo", "active", "description", "source"],
+  searchFields: ["key", "description", "source"],
+  sortFields: ["key", "effectiveFrom", "effectiveTo", "numericValue", "active"],
+  defaultSort: { key: 1, effectiveFrom: -1 },
+  populate: [
+    { path: "createdBy", select: "name email role" },
+    { path: "updatedBy", select: "name email role" }
+  ]
 });
 
 export const accountingPeriods = {

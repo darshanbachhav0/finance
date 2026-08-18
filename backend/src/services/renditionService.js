@@ -1,14 +1,17 @@
 import FinancialRequest from "../models/FinancialRequest.js";
 import AccountsPayable from "../models/AccountsPayable.js";
+import CostCenter from "../models/CostCenter.js";
 import { createRenditionJournal } from "./accountingService.js";
 import { validateAccountingDimensions } from "./accountingDimensionService.js";
-import { recordAudit, workflowEvent } from "./auditService.js";
+import { clientIp, recordAudit, workflowEvent } from "./auditService.js";
 import { guardAccountingPeriod } from "./periodService.js";
 import { notifyRoles, notifyUser, resolveNotification } from "./notificationService.js";
 import { parseRequestLines, requestPopulate } from "./requestService.js";
 import { assertRequestLines } from "./requestRules.js";
 import { cleanupUploadedFiles, persistUploadedFiles } from "./storageService.js";
 import { runFinancialOperation } from "./transactionService.js";
+import { evaluateConfiguredMobilityLines } from "./financeConfigurationService.js";
+import { nextRenditionNumber } from "./sequenceService.js";
 import { AppError } from "../utils/AppError.js";
 import { ERROR_CODES, REQUEST_STATUS, REQUEST_TYPE, ROLES } from "../utils/constants.js";
 import { addMoney, moneyEquals, multiplyMoney, subtractMoney, sumMoney } from "../utils/money.js";
@@ -32,6 +35,20 @@ function assertOwner(request, user) {
   if (user.role !== ROLES.ADMIN && String(owner) !== String(user._id)) {
     throw new AppError(403, "Only the requester can submit this rendition.", undefined, ERROR_CODES.FORBIDDEN);
   }
+}
+
+function parseOptionalArray(value, field) {
+  if (value === undefined || value === null || value === "") return [];
+  let parsed = value;
+  if (typeof value === "string") {
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      throw new AppError(422, `${field} must contain valid JSON.`, { field }, ERROR_CODES.VALIDATION_ERROR);
+    }
+  }
+  if (!Array.isArray(parsed)) throw new AppError(422, `${field} must be an array.`, { field }, ERROR_CODES.VALIDATION_ERROR);
+  return parsed;
 }
 
 export async function submitRendition({ requestId, payload, files, user, req }) {
@@ -76,11 +93,55 @@ export async function submitRendition({ requestId, payload, files, user, req }) 
     request.rendition.amountRendered = amountRendered;
     request.rendition.amountReturned = amountReturned;
     request.rendition.balanceOutstanding = balanceOutstanding;
+    const mobilityLines = parseOptionalArray(payload.mobilityLines, "mobilityLines");
+    const unsupportedExpenseLines = parseOptionalArray(payload.unsupportedExpenseLines, "unsupportedExpenseLines");
+    if (payload.mobilityLines !== undefined) request.rendition.mobilityLines = mobilityLines;
+    if (payload.unsupportedExpenseLines !== undefined) request.rendition.unsupportedExpenseLines = unsupportedExpenseLines;
+    if (mobilityLines.length) {
+      const evaluation = await evaluateConfiguredMobilityLines(mobilityLines, request.issueDate);
+      request.rendition.limitEvaluation = evaluation.configured ? {
+        configuration: evaluation.configurationId,
+        key: evaluation.key,
+        configuredValue: evaluation.configuredValue,
+        currency: evaluation.currency,
+        effectiveFrom: evaluation.effectiveFrom,
+        effectiveTo: evaluation.effectiveTo,
+        behavior: evaluation.behavior,
+        evaluatedAt: new Date(),
+        exceededLineCount: evaluation.exceededLineCount
+      } : undefined;
+      request.rendition.mobilityLines.forEach((line, index) => {
+        line.limitExceeded = evaluation.lineResults[index]?.exceeded || false;
+      });
+    }
+    request.rendition.number ||= await nextRenditionNumber(request.issueDate || new Date());
+    const requesterCostCenter = request.requesterCostCenter
+      ? await CostCenter.findById(request.requesterCostCenter).select("code name")
+      : null;
+    request.rendition.beneficiarySnapshot = {
+      user: user._id,
+      employeeCode: user.employeeCode,
+      name: user.name,
+      email: user.email,
+      area: user.area,
+      costCenter: requesterCostCenter?._id || request.requesterCostCenter,
+      costCenterCode: requesterCostCenter?.code,
+      costCenterName: requesterCostCenter?.name
+    };
     request.rendition.status = "SUBMITTED";
     request.rendition.submittedAt = new Date();
     request.rendition.submittedBy = user._id;
     request.rendition.comments = payload.comments;
-    request.approvalHistory.push(workflowEvent({ action: "RENDITION_SUBMITTED", from: request.status, to: request.status, user, req, comments: payload.comments || "Rendition submitted for Accounting validation.", request }));
+    const submissionEvent = workflowEvent({ action: "RENDITION_SUBMITTED", from: request.status, to: request.status, user, req, comments: payload.comments || "Rendition submitted for Accounting validation.", request });
+    request.rendition.beneficiaryAcknowledgment = {
+      type: "AUTHENTICATED_ELECTRONIC_SIGN_OFF",
+      signer: user._id,
+      signerName: user.name,
+      signedAt: submissionEvent.createdAt,
+      ip: clientIp(req),
+      reference: submissionEvent.signature
+    };
+    request.approvalHistory.push(submissionEvent);
     await request.save();
     requestSaved = true;
     await recordAudit({ entityType: "FinancialRequest", entity: request, action: "RENDITION_SUBMITTED", user, req, module: "RENDITION", newValues: { amountAdvanced, amountRendered, amountReturned, balanceOutstanding } });

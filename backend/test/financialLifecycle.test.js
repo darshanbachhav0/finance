@@ -153,9 +153,9 @@ test("production financial controls cover the canonical lifecycle", { timeout: 1
 
     await t.test("6. supplier bank-account history is retained", async () => {
       const historySupplier = await Supplier.create({ rucDni: "20777777771", name: "Bank History", status: "PENDING_VALIDATION" });
-      await replaceActiveBankAccount(historySupplier, { bankName: "BCP", currency: "PEN", bankAccount: "111", cci: "222" }, users.accounting._id);
+      await replaceActiveBankAccount(historySupplier, { bankName: "BCP", currency: "PEN", bankAccount: "111", cci: "00211100000000000001" }, users.accounting._id);
       await historySupplier.save();
-      await replaceActiveBankAccount(historySupplier, { bankName: "BBVA", currency: "PEN", bankAccount: "333", cci: "444" }, users.accounting._id);
+      await replaceActiveBankAccount(historySupplier, { bankName: "BBVA", currency: "PEN", bankAccount: "333", cci: "01133300000000000001" }, users.accounting._id);
       await historySupplier.save();
       assert.equal(await SupplierBankAccount.countDocuments({ supplier: historySupplier._id }), 2);
       assert.equal(await SupplierBankAccount.countDocuments({ supplier: historySupplier._id, active: true }), 1);
