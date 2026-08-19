@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import { AP_STATUS, CURRENCY } from "../utils/constants.js";
+import { AP_STATUS, CURRENCY, PAYMENT_DESTINATION_SOURCES, SUPPLIER_PAYMENT_TERM_OPTIONS } from "../utils/constants.js";
 
 const accountsPayableSchema = new mongoose.Schema(
   {
@@ -19,17 +19,30 @@ const accountsPayableSchema = new mongoose.Schema(
     penEquivalent: { type: Number, required: true, min: 0 },
     outstandingAmount: { type: Number, required: true, min: 0 },
     dueDate: Date,
+    paymentTermsSnapshot: {
+      option: { type: String, enum: SUPPLIER_PAYMENT_TERM_OPTIONS },
+      days: { type: Number, min: 0 },
+      supplier: { type: mongoose.Schema.Types.ObjectId, ref: "Supplier" },
+      capturedAt: Date
+    },
     status: { type: String, enum: Object.values(AP_STATUS), default: AP_STATUS.OPEN, index: true },
     provisionJournal: { type: mongoose.Schema.Types.ObjectId, ref: "JournalEntry" },
     paymentJournal: { type: mongoose.Schema.Types.ObjectId, ref: "JournalEntry" },
     paymentBatch: { type: mongoose.Schema.Types.ObjectId, ref: "PaymentBatch" },
     bankAccountSnapshot: {
+      sourceType: { type: String, enum: PAYMENT_DESTINATION_SOURCES },
       bankAccountId: { type: mongoose.Schema.Types.ObjectId, ref: "SupplierBankAccount" },
+      employeeBankAccountId: { type: mongoose.Schema.Types.ObjectId, ref: "EmployeeReimbursementBankAccount" },
       bank: String,
       currency: String,
+      accountType: String,
+      accountHolderName: String,
       accountNumber: String,
       cci: String,
-      validFrom: Date
+      validFrom: Date,
+      verificationStatus: String,
+      ownershipResult: String,
+      capturedAt: Date
     },
     paidDate: Date,
     history: [{ status: String, at: { type: Date, default: Date.now }, by: { type: mongoose.Schema.Types.ObjectId, ref: "User" }, comments: String }]

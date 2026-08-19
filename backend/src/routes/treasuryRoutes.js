@@ -1,6 +1,7 @@
 import { Router } from "express";
 import {
   confirmPayment,
+  eligiblePaymentDestinations,
   generateBankFile,
   listBankFiles,
   paymentConfirmationQueue,
@@ -19,6 +20,7 @@ router.get("/queue", paymentQueue);
 router.get("/bank-files", listBankFiles);
 router.get("/payment-confirmations", paymentConfirmationQueue);
 router.get("/reconciliation", reconciliationQueue);
+router.get("/requests/:id/eligible-accounts", eligiblePaymentDestinations);
 router.post("/schedule", schedulePaymentRequests);
 router.post("/bank-file", generateBankFile);
 router.post("/requests/:id/confirm-payment", confirmPayment);

@@ -27,6 +27,7 @@ import { assertSupplierEligibleForRequestReview, assertSupplierUsable } from "./
 import { transitionRequest } from "./workflowService.js";
 import { validateXmlAgainstRequest } from "./xmlValidationService.js";
 import { previewBudget, releaseBudget } from "./budgetService.js";
+import { evaluateProcurementReadiness } from "./procurementReadinessService.js";
 import { AppError } from "../utils/AppError.js";
 import {
   ERROR_CODES,
@@ -87,6 +88,49 @@ const attachmentKinds = Object.freeze({
 
 function parseBoolean(value) {
   return value === true || value === "true" || value === "1";
+}
+
+function maskBankValue(value) {
+  const text = String(value || "");
+  if (!text) return "";
+  return `${"*".repeat(Math.max(4, text.length - 4))}${text.slice(-4)}`;
+}
+
+function serializePaymentRecords(records, user) {
+  const reveal = [ROLES.ADMIN, ROLES.ACCOUNTING, ROLES.TREASURY].includes(user?.role);
+  return records.map((record) => {
+    const value = record.toObject ? record.toObject() : { ...record };
+    if (reveal || !value.bankAccountSnapshot) return value;
+    return {
+      ...value,
+      bankAccountSnapshot: {
+        ...value.bankAccountSnapshot,
+        accountHolderName: undefined,
+        accountNumber: maskBankValue(value.bankAccountSnapshot.accountNumber),
+        cci: maskBankValue(value.bankAccountSnapshot.cci)
+      }
+    };
+  });
+}
+
+function serializePaymentBatches(records, user) {
+  const reveal = [ROLES.ADMIN, ROLES.ACCOUNTING, ROLES.TREASURY].includes(user?.role);
+  return records.map((record) => {
+    const value = record.toObject ? record.toObject() : { ...record };
+    if (reveal) return value;
+    return {
+      ...value,
+      items: (value.items || []).map((item) => ({
+        ...item,
+        bankAccount: item.bankAccount ? {
+          ...item.bankAccount,
+          accountHolderName: undefined,
+          accountNumber: maskBankValue(item.bankAccount.accountNumber),
+          cci: maskBankValue(item.bankAccount.cci)
+        } : item.bankAccount
+      }))
+    };
+  });
 }
 
 function parseJson(value, field) {
@@ -478,16 +522,33 @@ export async function getRequestDetail(id, user) {
   const request = await FinancialRequest.findById(id).populate(requestPopulate);
   if (!request) throw new AppError(404, "Financial request not found.", { id }, ERROR_CODES.NOT_FOUND);
   if (!canViewRequest(request, user)) throw new AppError(403, "You do not have permission to view this request.", undefined, ERROR_CODES.FORBIDDEN);
-  const [accountsPayable, journalEntries, paymentBatches, reconciliation, audit, budgetPreview] = await Promise.all([
+  const [accountsPayable, journalEntries, paymentBatches, reconciliation, audit, budgetPreview, procurementReadiness] = await Promise.all([
     AccountsPayable.find({ request: request._id }).populate("supplier", "name legalName rucDni").sort({ createdAt: 1 }),
     JournalEntry.find({ request: request._id }).sort({ accountingDate: 1, createdAt: 1 }),
     PaymentBatch.find({ "items.request": request._id }).select("-filePath").sort({ generatedAt: -1 }),
     Reconciliation.findOne({ request: request._id }).populate("reconciledBy", "name email role"),
     AuditLog.find({ $or: [{ requestId: request._id }, { entityType: "FinancialRequest", entityId: request._id }] })
       .populate("user", "name email role").sort({ createdAt: 1 }),
-    previewBudget(request).catch((error) => ({ status: "PENDING_VALIDATION", errorCode: error.code || ERROR_CODES.VALIDATION_ERROR, lines: [] }))
+    previewBudget(request).catch((error) => ({ status: "PENDING_VALIDATION", errorCode: error.code || ERROR_CODES.VALIDATION_ERROR, lines: [] })),
+    evaluateProcurementReadiness(request)
   ]);
-  return { request, accountsPayable, journalEntries, paymentBatches, reconciliation, audit, budgetPreview };
+  return {
+    request,
+    accountsPayable: serializePaymentRecords(accountsPayable, user),
+    journalEntries,
+    paymentBatches: serializePaymentBatches(paymentBatches, user),
+    reconciliation,
+    audit,
+    budgetPreview,
+    procurementReadiness
+  };
+}
+
+export async function getRequestProcurementReadiness(id, user) {
+  const request = await FinancialRequest.findById(id).populate(requestPopulate);
+  if (!request) throw new AppError(404, "Financial request not found.", { id }, ERROR_CODES.NOT_FOUND);
+  if (!canViewRequest(request, user)) throw new AppError(403, "You do not have permission to view this request.", undefined, ERROR_CODES.FORBIDDEN);
+  return evaluateProcurementReadiness(request);
 }
 
 export async function createFinancialRequest({ payload, files, user, req }) {

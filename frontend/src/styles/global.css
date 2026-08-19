@@ -637,6 +637,34 @@ h1, h2, h3 { letter-spacing: 0; color: var(--gray-950); }
 .attachment-list > a { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 8px 10px; border: 1px solid var(--gray-200); border-radius: 5px; background: var(--gray-50); font-size: 10px; }
 .inline-link { display: inline-flex; margin-top: 7px; color: var(--teal-700); font-size: 10px; font-weight: 700; }
 
+/* Phase 5 workflow integration */
+.readiness-gates { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.readiness-gates > div { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 10px; border: 1px solid var(--gray-200); border-radius: 5px; background: var(--gray-50); }
+.readiness-gates span { color: var(--gray-600); font-size: 9px; font-weight: 700; }
+.readiness-gates strong { color: var(--gray-900); font-size: 10px; overflow-wrap: anywhere; }
+.responsibility-map { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 12px; border: 1px solid var(--gray-200); border-radius: 5px; overflow: hidden; }
+.responsibility-map > div { min-width: 0; display: grid; gap: 3px; padding: 9px 10px; border-right: 1px solid var(--gray-200); border-bottom: 1px solid var(--gray-200); }
+.responsibility-map > div:nth-child(3n) { border-right: 0; }
+.responsibility-map span { color: var(--gray-600); font-size: 9px; }
+.responsibility-map strong { color: var(--gray-900); font-size: 10px; overflow-wrap: anywhere; }
+.readiness-issues { display: grid; gap: 6px; margin: 12px 0 0; padding: 0; list-style: none; }
+.readiness-issues li { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 7px; padding: 8px 10px; color: var(--red-700); border: 1px solid #edc0c0; border-radius: 5px; background: #fff5f5; }
+.readiness-issues li > div { min-width: 0; display: grid; gap: 2px; }
+.readiness-issues strong { font-size: 9px; }
+.readiness-issues span { color: var(--gray-700); font-size: 10px; }
+.order-summary { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 8px; margin-top: 12px; padding: 10px; border-left: 3px solid var(--teal-600); background: var(--teal-100); }
+.order-summary > svg { color: var(--teal-700); }
+.order-summary > div { min-width: 0; display: grid; gap: 2px; }
+.order-summary strong { color: var(--navy-900); font-size: 11px; }
+.order-summary span { color: var(--gray-700); font-size: 9px; overflow-wrap: anywhere; }
+.payment-destination-summary { min-width: 170px; display: grid; gap: 2px; }
+.payment-destination-summary strong { font-size: 10px; }
+.payment-destination-summary > span { color: var(--gray-700); font: 9px ui-monospace, SFMono-Regular, Consolas, monospace; }
+.payment-destination-summary small { display: inline-flex; align-items: center; gap: 4px; color: var(--gray-600); font-size: 8px; }
+.table-account-select { min-width: 190px; display: grid; gap: 3px; }
+.table-account-select select { width: 100%; min-height: 32px; padding: 5px 27px 5px 7px; border: 1px solid var(--gray-300); border-radius: 5px; color: var(--gray-900); background: white; font-size: 9px; }
+.table-account-select small { color: var(--gray-500); font-size: 8px; line-height: 1.35; }
+
 /* Production control surfaces */
 .section-tabs { display: flex; gap: 3px; margin: 0 0 16px; padding: 4px; overflow-x: auto; border: 1px solid var(--gray-200); border-radius: 6px; background: white; box-shadow: var(--shadow-sm); scrollbar-width: thin; }
 .section-tabs a { flex: 0 0 auto; min-height: 32px; display: inline-flex; align-items: center; padding: 6px 10px; border-radius: 4px; color: var(--gray-700); font-size: 10px; font-weight: 750; white-space: nowrap; }
@@ -802,6 +830,8 @@ h1, h2, h3 { letter-spacing: 0; color: var(--gray-950); }
   .status-workspace { overflow-x: auto; }
   .status-flow { min-width: 650px; }
   .action-buttons { grid-template-columns: 1fr; }
+  .readiness-gates, .responsibility-map { grid-template-columns: 1fr; }
+  .responsibility-map > div, .responsibility-map > div:nth-child(3n) { border-right: 0; }
   .selection-bar, .success-result, .period-toolbar { align-items: stretch; flex-direction: column; }
   .selection-controls { align-items: stretch; flex-direction: column; }
   .treasury-file-controls { display: grid; }

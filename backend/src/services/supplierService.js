@@ -1072,7 +1072,7 @@ export async function homologateSupplier({ supplierId, user, req }) {
 }
 
 export function isSupplierUsable(supplier) {
-  return Boolean(supplier && ((supplier.active && supplier.homologationStatus === "HOMOLOGATED") || supplier.status === "ACTIVE"));
+  return Boolean(supplier && supplier.active && supplier.homologationStatus === "HOMOLOGATED");
 }
 
 export function assertSupplierUsable(supplier) {

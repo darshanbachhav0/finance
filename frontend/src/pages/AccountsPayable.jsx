@@ -52,6 +52,7 @@ export default function AccountsPayable() {
             { key: "originalAmount", label: "Original", align: "right", render: (row) => money(row.currency, row.originalAmount) },
             { key: "outstandingAmount", label: "Outstanding", align: "right", render: (row) => <strong>{money(row.currency, row.outstandingAmount)}</strong> },
             { key: "status", label: "Status", render: (row) => <StatusBadge status={row.status} /> },
+            { key: "paymentTerms", label: "Payment Terms", sortable: false, getValue: (row) => row.paymentTermsSnapshot?.days, render: (row) => row.paymentTermsSnapshot?.option ? `${t(row.paymentTermsSnapshot.option)} · ${row.paymentTermsSnapshot.days || 0} ${t("days")}` : "-" },
             { key: "dueDate", label: "Due date", render: (row) => row.dueDate ? new Date(row.dueDate).toLocaleDateString() : "-" }
           ]}
         />
@@ -64,6 +65,9 @@ export default function AccountsPayable() {
             <div><dt>{t("Original amount")}</dt><dd>{money(selected.currency, selected.originalAmount)}</dd></div>
             <div><dt>{t("Outstanding amount")}</dt><dd>{money(selected.currency, selected.outstandingAmount)}</dd></div>
             <div><dt>{t("PEN equivalent")}</dt><dd>{money("PEN", selected.penEquivalent)}</dd></div>
+            <div><dt>{t("Payment Terms")}</dt><dd>{selected.paymentTermsSnapshot?.option ? `${t(selected.paymentTermsSnapshot.option)} · ${selected.paymentTermsSnapshot.days || 0} ${t("days")}` : "-"}</dd></div>
+            <div><dt>{t("Due date")}</dt><dd>{selected.dueDate ? new Date(selected.dueDate).toLocaleDateString() : "-"}</dd></div>
+            <div><dt>{t("Payment Destination Snapshot")}</dt><dd>{selected.bankAccountSnapshot?.bank ? `${selected.bankAccountSnapshot.bank} · ${t(selected.bankAccountSnapshot.sourceType || "SUPPLIER")}` : "-"}</dd></div>
             <div><dt>{t("Payment batch")}</dt><dd>{selected.paymentBatch?.batchNumber || "-"}</dd></div>
             <div><dt>{t("Provision entry")}</dt><dd>{selected.provisionJournal?.entryNumber || "-"}</dd></div>
             <div><dt>{t("Payment entry")}</dt><dd>{selected.paymentJournal?.entryNumber || "-"}</dd></div>

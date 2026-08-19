@@ -2,10 +2,12 @@ import { Router } from "express";
 import {
   closeRequest,
   approveRendition,
+  createProcurementOrder,
   createRequest,
   deleteRequest,
   getAuthorizedCostCenters,
   getBudgetPreview,
+  getProcurementReadiness,
   getRequestDocumentRequirements,
   getRequestFormPolicy,
   getRenditionFormPolicy,
@@ -34,6 +36,8 @@ router.get("/authorized-cost-centers", authorize(...REQUEST_CREATOR_ROLES), getA
 router.post("/budget-preview", authorize(...REQUEST_CREATOR_ROLES), getBudgetPreview);
 router.route("/").get(listRequests).post(authorize(...REQUEST_CREATOR_ROLES), uploadFields, createRequest);
 router.route("/:id").get(getRequest).put(uploadFields, updateRequest).delete(deleteRequest);
+router.get("/:id/procurement-readiness", getProcurementReadiness);
+router.post("/:id/procurement-order", authorize(ROLES.ADMIN, ROLES.BUDGET), createProcurementOrder);
 router.post("/:id/submit", submitRequest);
 router.post("/:id/rendition", authorize(ROLES.ADMIN, ROLES.SOLICITOR), uploadFields, uploadRendition);
 router.get("/:id/rendition/policy", getRenditionFormPolicy);

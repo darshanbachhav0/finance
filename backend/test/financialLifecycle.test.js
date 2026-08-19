@@ -76,10 +76,12 @@ test("production financial controls cover the canonical lifecycle", { timeout: 1
       taxpayerStatus: "MANUALLY_VALIDATED",
       complianceStatus: "COMPLIANT",
       homologationStatus: "HOMOLOGATED",
+      supplierCode: "PRV-9791",
+      paymentTerms: { option: "CREDIT_30", days: 30 },
       active: true,
       status: "ACTIVE"
     });
-    await SupplierBankAccount.create({ supplier: supplier._id, bank: "BCP", currency: "PEN", accountNumber: "191000000001", cci: "00219100000000000001", active: true, createdBy: users.admin._id });
+    await SupplierBankAccount.create({ supplier: supplier._id, bank: "BCP", currency: "PEN", accountType: "CURRENT", accountNumber: "191000000001", cci: "00219100000000000001", active: true, verificationStatus: "VERIFIED", ownershipResult: "MATCH", createdBy: users.admin._id });
     await AccountingPeriod.create({ period, status: "OPEN", openedBy: users.accounting._id, history: [{ action: "CREATED", by: users.accounting._id }] });
     const mappings = [
       ["TEST-AP", "ACCOUNTS_PAYABLE", "*", "421201"],
@@ -207,11 +209,19 @@ test("production financial controls cover the canonical lifecycle", { timeout: 1
 
     let payable;
     await t.test("15-17. duplicate voucher protection, CXP creation, and balanced provision", async () => {
-      const result = await processAccountsPayable({ requestId: request._id, payload: { documentType: "FACTURA", series: "F001", number: "0001", documentDate: issueDate, accountingDate: issueDate, fiscalPeriod: period, accountNumber: opex.accountNumber }, user: users.accounting, req });
+      const result = await processAccountsPayable({ requestId: request._id, payload: { documentType: "FACTURA", series: "F001", number: "0001", documentDate: issueDate, accountingDate: issueDate, fiscalPeriod: period, accountNumber: opex.accountNumber, dueDate: "2026-09-30" }, user: users.accounting, req });
       request = result.request;
       payable = result.accountsPayable;
       assert.equal(request.status, REQUEST_STATUS.ACCOUNTED);
       assert.equal(payable.status, AP_STATUS.OPEN);
+      assert.equal(payable.paymentTermsSnapshot.option, "CREDIT_30");
+      assert.equal(payable.paymentTermsSnapshot.days, 30);
+      assert.equal(payable.dueDate.toISOString().slice(0, 10), "2026-09-30");
+      supplier.paymentTerms = { option: "CREDIT_45", days: 45 };
+      await supplier.save();
+      const historicalPayable = await AccountsPayable.findById(payable._id);
+      assert.equal(historicalPayable.paymentTermsSnapshot.option, "CREDIT_30");
+      assert.equal(historicalPayable.paymentTermsSnapshot.days, 30);
       assert.equal(result.journal.totalDebit, result.journal.totalCredit);
       const duplicateRequest = await FinancialRequest.create({ requestType: REQUEST_TYPE.OPEX, expenseNature: EXPENSE_NATURE.MAINTENANCE, issueDate, accountingPeriod: period, currency: "PEN", supplier: supplier._id, solicitor: users.solicitor._id, status: REQUEST_STATUS.BUDGET_COMMITTED, description: "Duplicate voucher", lines: [{ costCenter: center._id, expenseType: opex._id, netAmount: 100, igvAmount: 18, totalAmount: 118 }] });
       await assert.rejects(() => processAccountsPayable({ requestId: duplicateRequest._id, payload: { documentType: " factura ", series: " f001 ", number: " 0001 ", documentDate: issueDate, accountingDate: issueDate, fiscalPeriod: period }, user: users.accounting, req }), (error) => error.code === "DUPLICATE_VOUCHER");

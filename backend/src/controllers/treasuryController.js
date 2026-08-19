@@ -3,6 +3,7 @@ import { publicRequestPayload } from "../services/requestService.js";
 import {
   confirmTreasuryPayment,
   generatePaymentBatch,
+  getEligiblePaymentDestinations,
   listPaymentBatches,
   listPaymentConfirmationQueue,
   listReconciliationQueue,
@@ -15,6 +16,9 @@ export const paymentQueue = asyncHandler(async (req, res) => res.json(await list
 export const listBankFiles = asyncHandler(async (req, res) => res.json(await listPaymentBatches(req.query)));
 export const paymentConfirmationQueue = asyncHandler(async (req, res) => res.json(await listPaymentConfirmationQueue(req.query)));
 export const reconciliationQueue = asyncHandler(async (req, res) => res.json(await listReconciliationQueue(req.query)));
+export const eligiblePaymentDestinations = asyncHandler(async (req, res) => {
+  res.json({ data: await getEligiblePaymentDestinations({ requestId: req.params.id, bank: req.query.bank, currency: req.query.currency }) });
+});
 
 export const schedulePaymentRequests = asyncHandler(async (req, res) => {
   const requests = await schedulePayments({ ...req.body, user: req.user, req });

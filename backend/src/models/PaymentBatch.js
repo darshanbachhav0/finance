@@ -10,11 +10,19 @@ const paymentItemSchema = new mongoose.Schema(
     supplierIdentifier: { type: String, required: true },
     supplierName: { type: String, required: true },
     bankAccount: {
+      sourceType: String,
+      bankAccountId: mongoose.Schema.Types.ObjectId,
+      employeeBankAccountId: mongoose.Schema.Types.ObjectId,
       bank: String,
       currency: String,
+      accountType: String,
+      accountHolderName: String,
       accountNumber: String,
       cci: String,
-      validFrom: Date
+      validFrom: Date,
+      verificationStatus: String,
+      ownershipResult: String,
+      capturedAt: Date
     },
     amount: { type: Number, required: true, min: 0 },
     currency: { type: String, enum: CURRENCY, required: true },
@@ -48,4 +56,3 @@ paymentBatchSchema.index({ status: 1, paymentDate: 1 });
 paymentBatchSchema.index({ bank: 1, currency: 1, generatedAt: -1 });
 
 export default mongoose.model("PaymentBatch", paymentBatchSchema);
-

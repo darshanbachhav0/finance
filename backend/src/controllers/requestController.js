@@ -4,6 +4,7 @@ import {
   createFinancialRequest,
   deleteFinancialRequest,
   getRequestDetail,
+  getRequestProcurementReadiness,
   listRequestsPage,
   previewFinancialRequestBudget,
   publicRequestPayload,
@@ -14,6 +15,7 @@ import {
   updateFinancialRequest,
   voidFinancialRequest
 } from "../services/requestService.js";
+import { issueProcurementOrder } from "../services/purchaseOrderService.js";
 import {
   getRenditionBankDestination,
   getRenditionPolicy,
@@ -36,7 +38,8 @@ export const getRequest = asyncHandler(async (req, res) => {
       paymentBatches: result.paymentBatches,
       reconciliation: result.reconciliation,
       audit: result.audit,
-      budgetPreview: result.budgetPreview
+      budgetPreview: result.budgetPreview,
+      procurementReadiness: result.procurementReadiness
     }
   });
 });
@@ -55,6 +58,15 @@ export const getAuthorizedCostCenters = asyncHandler(async (req, res) => {
 
 export const getBudgetPreview = asyncHandler(async (req, res) => {
   res.json({ data: await previewFinancialRequestBudget({ payload: req.body, user: req.user }) });
+});
+
+export const getProcurementReadiness = asyncHandler(async (req, res) => {
+  res.json({ data: await getRequestProcurementReadiness(req.params.id, req.user) });
+});
+
+export const createProcurementOrder = asyncHandler(async (req, res) => {
+  const order = await issueProcurementOrder({ requestId: req.params.id, user: req.user, req });
+  res.status(201).json({ data: order });
 });
 
 export const createRequest = asyncHandler(async (req, res) => {

@@ -16,6 +16,7 @@ import { applyExchangeRate } from "./exchangeRateService.js";
 import { guardAccountingPeriod } from "./periodService.js";
 import { notifyRoles, notifyUser, resolveNotification } from "./notificationService.js";
 import { generatePurchaseOrder } from "./purchaseOrderService.js";
+import { evaluateProcurementReadiness } from "./procurementReadinessService.js";
 import { assertSupplierUsable } from "./supplierService.js";
 import { escapedRegex, paginatedPayload, parsePagination, parseSort } from "./queryService.js";
 import { requestListPopulate, requestListSelect, requestPopulate } from "./requestService.js";
@@ -29,8 +30,7 @@ import {
   MANDATORY_XML_TYPES,
   PERMISSIONS,
   REQUEST_STATUS,
-  ROLES,
-  REQUEST_TYPE
+  ROLES
 } from "../utils/constants.js";
 import { canApproveStage, hasPermission } from "../utils/permissions.js";
 
@@ -191,8 +191,9 @@ export async function commitApprovedRequestBudget({ request, user, req }) {
   const result = await runFinancialOperation(async (session) => {
     const commitment = await reserveBudget(request, user._id, { session });
     request.budgetCommitment = commitment._id;
-    if (request.requestType === REQUEST_TYPE.PAGO_CON_COTIZACION) {
-      const purchaseOrder = await generatePurchaseOrder(request, user, req, { session });
+    const procurement = await evaluateProcurementReadiness(request, { session, commitment });
+    if (procurement.applicable) {
+      const purchaseOrder = await generatePurchaseOrder(request, user, req, { session, commitment });
       request.purchaseOrder = purchaseOrder._id;
     }
     await transitionRequest({

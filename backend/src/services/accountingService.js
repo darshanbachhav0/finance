@@ -300,6 +300,13 @@ export async function processAccountsPayable({ requestId, payload, user, req }) 
     throw new AppError(409, "The supplier voucher is already registered.", { accountsPayable: duplicate._id }, ERROR_CODES.DUPLICATE_VOUCHER);
   }
 
+  const paymentTermsSnapshot = request.supplier?.paymentTerms?.option ? {
+    option: request.supplier.paymentTerms.option,
+    days: request.supplier.paymentTerms.days,
+    supplier: request.supplier._id,
+    capturedAt: new Date()
+  } : undefined;
+
   const result = await runFinancialOperation(async (session) => {
     request.fiscalData = { ...fiscal, processedAt: new Date(), processedBy: user._id };
     let accountsPayable = await AccountsPayable.findOne({ request: request._id }).session(session || null);
@@ -321,6 +328,7 @@ export async function processAccountsPayable({ requestId, payload, user, req }) 
         penEquivalent: request.totalPENEquivalent ?? request.penEquivalent,
         outstandingAmount: request.totalAmount,
         dueDate: payload.dueDate,
+        paymentTermsSnapshot,
         status: AP_STATUS.OPEN,
         history: [{ status: AP_STATUS.OPEN, by: user._id, comments: "CXP created after fiscal validation." }]
       }], session ? { session } : undefined);
@@ -346,7 +354,13 @@ export async function processAccountsPayable({ requestId, payload, user, req }) 
       user,
       req,
       module: "ACCOUNTING",
-      newValues: { status: accountsPayable.status, voucher: accountsPayable.voucher, provisionJournal: journal.entryNumber },
+      newValues: {
+        status: accountsPayable.status,
+        voucher: accountsPayable.voucher,
+        provisionJournal: journal.entryNumber,
+        paymentTermsSnapshot: accountsPayable.paymentTermsSnapshot,
+        dueDate: accountsPayable.dueDate
+      },
       session
     });
     return { request, accountsPayable, journal };

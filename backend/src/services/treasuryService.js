@@ -14,6 +14,11 @@ import { recordAudit } from "./auditService.js";
 import { markBudgetPaid } from "./budgetService.js";
 import { guardAccountingPeriod } from "./periodService.js";
 import { notifyRoles, notifyUser, resolveNotification } from "./notificationService.js";
+import {
+  listEligibleSupplierPaymentAccounts,
+  resolvePaymentDestination,
+  usesEmployeeReimbursementDestination
+} from "./paymentDestinationService.js";
 import { escapedRegex, paginatedPayload, parsePagination, parseSort } from "./queryService.js";
 import { nextPaymentBatchNumber } from "./sequenceService.js";
 import { generatedRoot } from "./storageService.js";
@@ -25,25 +30,19 @@ import { moneyEquals, roundMoney, subtractMoney, sumMoney } from "../utils/money
 
 const bankFilesDir = path.join(generatedRoot, "bank-files");
 
-async function loadActiveAccount(supplierId, bank, currency) {
-  return SupplierBankAccount.findOne({ supplier: supplierId, bank, currency, active: true }).sort({ validFrom: -1 });
+function selectedAccountId(accountSelections, requestId) {
+  if (Array.isArray(accountSelections)) {
+    return accountSelections.find((item) => String(item.requestId) === String(requestId))?.bankAccountId;
+  }
+  return accountSelections?.[String(requestId)];
 }
 
-function accountSnapshot(account) {
-  return {
-    bankAccountId: account._id,
-    bank: account.bank,
-    currency: account.currency,
-    accountNumber: account.accountNumber,
-    cci: account.cci,
-    validFrom: account.validFrom
-  };
-}
-
-async function loadPaymentItems(requestIds, bank, currency) {
+async function loadPaymentItems(requestIds, bank, currency, accountSelections = {}) {
   const uniqueIds = [...new Set(requestIds.map(String))];
   if (uniqueIds.length !== requestIds.length) throw new AppError(422, "A request cannot be selected twice.", undefined, ERROR_CODES.VALIDATION_ERROR);
-  const requests = await FinancialRequest.find({ _id: { $in: uniqueIds } }).populate("supplier");
+  const requests = await FinancialRequest.find({ _id: { $in: uniqueIds } })
+    .select("+rendition.reimbursementBankSnapshot.accountHolderName +rendition.reimbursementBankSnapshot.accountNumber +rendition.reimbursementBankSnapshot.cci")
+    .populate("supplier");
   if (requests.length !== uniqueIds.length) throw new AppError(404, "One or more selected requests were not found.", undefined, ERROR_CODES.NOT_FOUND);
   const items = [];
   for (const request of requests) {
@@ -57,27 +56,30 @@ async function loadPaymentItems(requestIds, bank, currency) {
     if (!accountsPayable || ![AP_STATUS.OPEN, AP_STATUS.SCHEDULED].includes(accountsPayable.status) || accountsPayable.paymentBatch) {
       throw new AppError(409, `${request.requestNumber} CXP is not available for a new payment batch.`, { status: accountsPayable?.status }, ERROR_CODES.INVALID_STATUS_TRANSITION);
     }
-    const bankAccount = await loadActiveAccount(request.supplier._id, bank, currency);
-    if (!bankAccount) {
-      throw new AppError(422, `${request.requestNumber} has no active ${bank} ${currency} bank account.`, { supplier: request.supplier._id, bank, currency }, ERROR_CODES.BANK_DETAILS_MISSING);
-    }
+    const destination = await resolvePaymentDestination({
+      request,
+      accountsPayable,
+      bank,
+      currency,
+      selectedAccountId: selectedAccountId(accountSelections, request._id)
+    });
     items.push({
       request,
       accountsPayable,
-      bankAccount,
+      bankAccount: destination.account,
       requestNumber: request.requestNumber,
       supplierIdentifier: request.supplier.normalizedIdentifier || request.supplier.rucDni,
       supplierName: request.supplier.legalName || request.supplier.name,
       amount: accountsPayable.outstandingAmount,
       currency,
-      bankAccountSnapshot: accountSnapshot(bankAccount)
+      bankAccountSnapshot: destination.snapshot
     });
   }
   return items;
 }
 
 async function scheduleLoadedItem(item, paymentDate, user, req, session) {
-  const { request, accountsPayable, bankAccount } = item;
+  const { request, accountsPayable, bankAccountSnapshot } = item;
   await guardAccountingPeriod({
     period: request.accountingPeriod,
     action: "SCHEDULE",
@@ -90,7 +92,7 @@ async function scheduleLoadedItem(item, paymentDate, user, req, session) {
   });
   if (request.status === REQUEST_STATUS.ACCOUNTED) {
     accountsPayable.status = AP_STATUS.SCHEDULED;
-    accountsPayable.bankAccountSnapshot = accountSnapshot(bankAccount);
+    accountsPayable.bankAccountSnapshot = bankAccountSnapshot;
     accountsPayable.history.push({ status: AP_STATUS.SCHEDULED, by: user._id, comments: `Scheduled for ${new Date(paymentDate).toISOString().slice(0, 10)}.` });
     await accountsPayable.save({ session });
     await transitionRequest({
@@ -102,7 +104,76 @@ async function scheduleLoadedItem(item, paymentDate, user, req, session) {
       comments: `Scheduled for ${new Date(paymentDate).toISOString().slice(0, 10)}.`,
       session
     });
+    await recordAudit({
+      entityType: "AccountsPayable",
+      entity: accountsPayable,
+      requestId: request._id,
+      action: "PAYMENT_DESTINATION_SELECTED",
+      user,
+      req,
+      module: "TREASURY",
+      newValues: {
+        sourceType: bankAccountSnapshot.sourceType,
+        bankAccountId: bankAccountSnapshot.bankAccountId || bankAccountSnapshot.employeeBankAccountId,
+        bank: bankAccountSnapshot.bank,
+        currency: bankAccountSnapshot.currency,
+        accountType: bankAccountSnapshot.accountType,
+        accountLast4: String(bankAccountSnapshot.accountNumber || bankAccountSnapshot.cci || "").slice(-4)
+      },
+      session
+    });
   }
+}
+
+async function countMissingPaymentDestinations(query, bank) {
+  const accountChecks = [
+    { $eq: ["$supplier", "$$supplierId"] },
+    { $eq: ["$currency", "$$currency"] },
+    { $eq: ["$active", true] },
+    { $eq: ["$accountType", "CURRENT"] },
+    {
+      $or: [
+        { $and: [{ $eq: ["$verificationStatus", "VERIFIED"] }, { $in: ["$ownershipResult", ["MATCH", "MANUAL_ACCEPTED"]] }] },
+        { $and: [{ $eq: ["$verificationStatus", "LEGACY_ACCEPTED"] }, { $ne: ["$ownershipResult", "MISMATCH"] }] }
+      ]
+    }
+  ];
+  const employeeChecks = [
+    { $in: ["$requestDoc.requestType", [REQUEST_TYPE.REEMBOLSO_CON_SUSTENTO, REQUEST_TYPE.REEMBOLSO_SIN_SUSTENTO]] },
+    { $ne: [{ $ifNull: ["$requestDoc.rendition.reimbursementBankSnapshot.profile", null] }, null] },
+    { $eq: ["$requestDoc.rendition.reimbursementBankSnapshot.verificationStatus", "VERIFIED"] },
+    { $eq: ["$requestDoc.rendition.reimbursementBankSnapshot.currency", "$currency"] }
+  ];
+  if (bank) {
+    accountChecks.push({ $eq: ["$bank", bank] });
+    employeeChecks.push({ $eq: ["$requestDoc.rendition.reimbursementBankSnapshot.bank", bank] });
+  }
+  const [result] = await AccountsPayable.aggregate([
+    { $match: query },
+    { $lookup: { from: FinancialRequest.collection.name, localField: "request", foreignField: "_id", as: "requestRows" } },
+    { $set: { requestDoc: { $arrayElemAt: ["$requestRows", 0] } } },
+    {
+      $lookup: {
+        from: SupplierBankAccount.collection.name,
+        let: { supplierId: "$supplier", currency: "$currency" },
+        pipeline: [{ $match: { $expr: { $and: accountChecks } } }],
+        as: "eligibleAccounts"
+      }
+    },
+    {
+      $match: {
+        $expr: {
+          $and: [
+            { $eq: [{ $ifNull: ["$bankAccountSnapshot.bank", null] }, null] },
+            { $eq: [{ $and: employeeChecks }, false] },
+            { $eq: [{ $size: "$eligibleAccounts" }, 0] }
+          ]
+        }
+      }
+    },
+    { $count: "count" }
+  ]);
+  return result?.count || 0;
 }
 
 export async function listTreasuryQueue(queryParams) {
@@ -111,8 +182,25 @@ export async function listTreasuryQueue(queryParams) {
   if (queryParams.currency) query.currency = queryParams.currency;
   if (queryParams.supplier) query.supplier = queryParams.supplier;
   if (queryParams.bank) {
-    const supplierIds = await SupplierBankAccount.distinct("supplier", { bank: String(queryParams.bank).toUpperCase(), active: true });
-    query.supplier = { $in: supplierIds };
+    const normalizedBank = String(queryParams.bank).toUpperCase();
+    const supplierIds = await SupplierBankAccount.distinct("supplier", {
+      bank: normalizedBank,
+      active: true,
+      accountType: "CURRENT",
+      $or: [
+        { verificationStatus: "VERIFIED", ownershipResult: { $in: ["MATCH", "MANUAL_ACCEPTED"] } },
+        { verificationStatus: "LEGACY_ACCEPTED", ownershipResult: { $ne: "MISMATCH" } }
+      ]
+    });
+    const employeeRequestIds = await FinancialRequest.distinct("_id", {
+      requestType: { $in: [REQUEST_TYPE.REEMBOLSO_CON_SUSTENTO, REQUEST_TYPE.REEMBOLSO_SIN_SUSTENTO] },
+      "rendition.reimbursementBankSnapshot.bank": normalizedBank
+    });
+    query.$and = [...(query.$and || []), { $or: [
+      { supplier: { $in: supplierIds } },
+      { "bankAccountSnapshot.bank": normalizedBank },
+      { request: { $in: employeeRequestIds } }
+    ] }];
   }
   if (queryParams.costCenter) {
     const requestIds = await FinancialRequest.distinct("_id", { "lines.costCenter": queryParams.costCenter });
@@ -135,31 +223,59 @@ export async function listTreasuryQueue(queryParams) {
       Supplier.distinct("_id", { $or: [{ legalName: search }, { name: search }, { rucDni: search }, { normalizedIdentifier: search }] }),
       FinancialRequest.distinct("_id", { $or: [{ requestNumber: search }, { "lines.costCenterSnapshot.code": search }] })
     ]);
-    query.$or = [
+    query.$and = [...(query.$and || []), { $or: [
       { supplierIdentifierSnapshot: search },
       { "voucher.series": search },
       { "voucher.number": search },
       { supplier: { $in: supplierIds } },
       { request: { $in: requestIds } }
-    ];
+    ] }];
   }
   const { page, pageSize, skip } = parsePagination(queryParams);
   const sort = parseSort(queryParams, ["dueDate", "outstandingAmount", "currency", "createdAt", "status"], { dueDate: 1, createdAt: 1 });
-  const [records, total, totalsByCurrency, supplierIds] = await Promise.all([
+  const [records, total, totalsByCurrency, missingBankDetails] = await Promise.all([
     AccountsPayable.find(query)
-      .populate({ path: "request", populate: [{ path: "lines.costCenter" }, { path: "lines.expenseType" }, { path: "requester", select: "name area" }] })
+      .populate({
+        path: "request",
+        select: "+rendition.reimbursementBankSnapshot.accountHolderName +rendition.reimbursementBankSnapshot.accountNumber +rendition.reimbursementBankSnapshot.cci",
+        populate: [{ path: "lines.costCenter" }, { path: "lines.expenseType" }, { path: "requester", select: "name area" }]
+      })
       .populate("supplier")
       .sort(sort).skip(skip).limit(pageSize),
     AccountsPayable.countDocuments(query),
     AccountsPayable.aggregate([{ $match: query }, { $group: { _id: "$currency", total: { $sum: "$outstandingAmount" }, count: { $sum: 1 } } }]),
-    AccountsPayable.distinct("supplier", query)
+    countMissingPaymentDestinations(query, queryParams.bank ? String(queryParams.bank).toUpperCase() : undefined)
   ]);
-  const suppliersWithBank = await SupplierBankAccount.distinct("supplier", { supplier: { $in: supplierIds }, active: true });
-  const missingBankDetails = await AccountsPayable.countDocuments({ ...query, supplier: { $in: supplierIds.filter((id) => !suppliersWithBank.some((value) => String(value) === String(id))) } });
   const data = await Promise.all(records.map(async (accountsPayable) => {
     const object = accountsPayable.toObject();
-    const accounts = await SupplierBankAccount.find({ supplier: accountsPayable.supplier._id, active: true }).select("-createdBy -changedBy");
-    return { ...object.request, accountsPayable: object, supplier: object.supplier, activeBankAccounts: accounts };
+    const request = object.request;
+    const frozen = object.bankAccountSnapshot?.bank ? object.bankAccountSnapshot : null;
+    if (usesEmployeeReimbursementDestination(request)) {
+      const source = request.rendition.reimbursementBankSnapshot;
+      const paymentDestination = frozen || {
+        sourceType: "EMPLOYEE_REIMBURSEMENT",
+        employeeBankAccountId: source.profile,
+        bank: source.bank,
+        currency: source.currency,
+        accountType: "CURRENT",
+        accountHolderName: source.accountHolderName,
+        accountNumber: source.accountNumber,
+        cci: source.cci,
+        verificationStatus: source.verificationStatus,
+        capturedAt: source.capturedAt
+      };
+      return { ...request, accountsPayable: object, supplier: object.supplier, activeBankAccounts: [], eligibleBankAccounts: [], paymentDestination, destinationLocked: true };
+    }
+    const accounts = await listEligibleSupplierPaymentAccounts({ supplierId: accountsPayable.supplier._id, currency: object.currency });
+    return {
+      ...request,
+      accountsPayable: object,
+      supplier: object.supplier,
+      activeBankAccounts: accounts,
+      eligibleBankAccounts: accounts,
+      paymentDestination: frozen,
+      destinationLocked: Boolean(frozen && object.status === AP_STATUS.SCHEDULED)
+    };
   }));
   return {
     ...paginatedPayload(data, total, page, pageSize),
@@ -170,23 +286,53 @@ export async function listTreasuryQueue(queryParams) {
   };
 }
 
-export async function schedulePayments({ requestIds, bank, currency, paymentDate, user, req }) {
+export async function getEligiblePaymentDestinations({ requestId, bank, currency }) {
+  const request = await FinancialRequest.findById(requestId)
+    .select("+rendition.reimbursementBankSnapshot.accountHolderName +rendition.reimbursementBankSnapshot.accountNumber +rendition.reimbursementBankSnapshot.cci")
+    .populate("supplier");
+  if (!request) throw new AppError(404, "Financial request not found.", { requestId }, ERROR_CODES.NOT_FOUND);
+  const accountsPayable = await AccountsPayable.findOne({ request: request._id });
+  if (!accountsPayable) throw new AppError(404, "Accounts Payable record not found.", { requestId }, ERROR_CODES.NOT_FOUND);
+  if (accountsPayable.status === AP_STATUS.SCHEDULED && accountsPayable.bankAccountSnapshot?.bank) {
+    return { sourceType: accountsPayable.bankAccountSnapshot.sourceType || "SUPPLIER", locked: true, selected: accountsPayable.bankAccountSnapshot, accounts: [accountsPayable.bankAccountSnapshot] };
+  }
+  if (usesEmployeeReimbursementDestination(request)) {
+    const source = request.rendition.reimbursementBankSnapshot;
+    const selected = {
+      sourceType: "EMPLOYEE_REIMBURSEMENT",
+      employeeBankAccountId: source.profile,
+      bank: source.bank,
+      currency: source.currency,
+      accountType: "CURRENT",
+      accountHolderName: source.accountHolderName,
+      accountNumber: source.accountNumber,
+      cci: source.cci,
+      verificationStatus: source.verificationStatus,
+      capturedAt: source.capturedAt
+    };
+    return { sourceType: selected.sourceType, locked: true, selected, accounts: [selected] };
+  }
+  const accounts = await listEligibleSupplierPaymentAccounts({ supplierId: request.supplier._id, bank, currency: currency || request.currency });
+  return { sourceType: "SUPPLIER", locked: false, selected: accounts[0] || null, accounts };
+}
+
+export async function schedulePayments({ requestIds, bank, currency, paymentDate, accountSelections, user, req }) {
   if (!Array.isArray(requestIds) || !requestIds.length) throw new AppError(422, "Select at least one payable request.", undefined, ERROR_CODES.VALIDATION_ERROR);
   if (!paymentDate) throw new AppError(422, "A payment date is required.", { field: "paymentDate" }, ERROR_CODES.VALIDATION_ERROR);
   const normalizedBank = String(bank || "").toUpperCase();
-  const items = await loadPaymentItems(requestIds, normalizedBank, currency);
+  const items = await loadPaymentItems(requestIds, normalizedBank, currency, accountSelections);
   await runFinancialOperation(async (session) => {
     for (const item of items) await scheduleLoadedItem(item, paymentDate, user, req, session);
   });
   return items.map((item) => item.request);
 }
 
-export async function generatePaymentBatch({ requestIds, bank, currency, paymentDate, user, req }) {
+export async function generatePaymentBatch({ requestIds, bank, currency, paymentDate, accountSelections, user, req }) {
   if (!Array.isArray(requestIds) || !requestIds.length) throw new AppError(422, "Select at least one payable request.", undefined, ERROR_CODES.VALIDATION_ERROR);
   if (!paymentDate) throw new AppError(422, "A payment date is required.", { field: "paymentDate" }, ERROR_CODES.VALIDATION_ERROR);
   const normalizedBank = String(bank || "").trim().toUpperCase();
   const adapter = getBankFileAdapter(normalizedBank);
-  const items = await loadPaymentItems(requestIds, normalizedBank, currency);
+  const items = await loadPaymentItems(requestIds, normalizedBank, currency, accountSelections);
   adapter.validateBatch(items.map((item) => ({ ...item, bankAccount: item.bankAccountSnapshot })));
   const batchNumber = await nextPaymentBatchNumber(paymentDate);
   const adapterItems = items.map((item) => ({ ...item, bankAccount: item.bankAccountSnapshot }));
