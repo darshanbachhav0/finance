@@ -6,7 +6,6 @@ import {
   Download,
   FileCheck2,
   FileText,
-  FileUp,
   MessageSquareWarning,
   Pencil,
   Printer,
@@ -24,6 +23,7 @@ import Message from "../components/Message.jsx";
 import PageHeader from "../components/PageHeader.jsx";
 import StatusBadge from "../components/StatusBadge.jsx";
 import ProtectedAssetButton from "../components/ProtectedAssetButton.jsx";
+import OfficialRenditionWorkspace from "../components/rendition/OfficialRenditionWorkspace.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useLanguage } from "../context/LanguageContext.jsx";
 import { useToast } from "../context/ToastContext.jsx";
@@ -49,17 +49,6 @@ function RequestStatusFlow({ request }) {
   </ol>;
 }
 
-function toRenditionLine(line) {
-  return {
-    clientId: line._id || `${Date.now()}-${Math.random()}`,
-    costCenter: line.costCenter?._id || line.costCenter || "",
-    expenseType: line.expenseType?._id || line.expenseType || "",
-    netAmount: line.netAmount ?? "",
-    igvAmount: line.igvAmount ?? "",
-    totalAmount: line.totalAmount ?? ""
-  };
-}
-
 export default function RequestDetail() {
   const { id } = useParams();
   const { user } = useAuth();
@@ -74,10 +63,6 @@ export default function RequestDetail() {
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState(false);
   const [confirm, setConfirm] = useState(null);
-  const [renditionFiles, setRenditionFiles] = useState([]);
-  const [renditionComments, setRenditionComments] = useState("");
-  const [renditionLines, setRenditionLines] = useState([]);
-  const [amountReturned, setAmountReturned] = useState("0");
 
   async function load() {
     setLoading(true);
@@ -86,7 +71,6 @@ export default function RequestDetail() {
       const nextRequest = response.data.data;
       setRequest(nextRequest);
       setRelated(response.data.related || emptyRelated);
-      if (!renditionLines.length && nextRequest.requestType === "ENTREGA_RENDIR") setRenditionLines((nextRequest.rendition?.lines?.length ? nextRequest.rendition.lines : nextRequest.lines || []).map(toRenditionLine));
       const [requirementsResponse, centersResponse, expensesResponse] = await Promise.all([
         api.get("/requests/document-requirements", { params: { requestType: nextRequest.requestType, expenseNature: nextRequest.expenseNature } }),
         api.get("/cost-centers", { params: { pageSize: 100, active: true } }),
@@ -111,9 +95,7 @@ export default function RequestDetail() {
       canApprove: ["PENDIENTE_APROBACION", "APROBADO_DIRECTOR", "APROBADO_VICERRECTOR"].includes(request.status) && ["Admin", "Approver", "Management"].includes(user.role) && (user.role === "Admin" || user.approvalLevel === request.approvalStage),
       canCommitBudget: request.status === "APROBADO_VICERRECTOR" && ["Admin", "Budget"].includes(user.role),
       canClose: request.status === "CONCILIADO" && ["Admin", "Accounting"].includes(user.role),
-      canVoid: !["BORRADOR", "CERRADO", "ANULADO"].includes(request.status) && ["Admin", "Accounting"].includes(user.role),
-      canSubmitRendition: request.status === "RENDICION_PENDIENTE" && ["PENDING", "OBSERVED"].includes(request.rendition?.status) && (user.role === "Admin" || owner),
-      canReviewRendition: request.status === "RENDICION_PENDIENTE" && request.rendition?.status === "SUBMITTED" && ["Admin", "Accounting"].includes(user.role)
+      canVoid: !["BORRADOR", "CERRADO", "ANULADO"].includes(request.status) && ["Admin", "Accounting"].includes(user.role)
     };
   }, [request, user]);
 
@@ -122,8 +104,6 @@ export default function RequestDetail() {
     return { ...rule, present };
   }).filter((rule) => rule.present < rule.minCount), [requirements, request]);
   const journalLines = useMemo(() => (related.journalEntries || []).flatMap((journal) => (journal.lines || []).map((line) => ({ ...line, _id: line._id || `${journal._id}-${line.accountNumber}`, entryNumber: journal.entryNumber, entryType: journal.entryType, period: journal.period, createdAt: journal.createdAt }))), [related.journalEntries]);
-  const renditionTotal = useMemo(() => renditionLines.reduce((sum, line) => sum + Number(line.totalAmount || 0), 0), [renditionLines]);
-  const renditionBalance = Number(request?.rendition?.amountAdvanced || request?.payment?.confirmedAmount || request?.totalAmount || 0) - renditionTotal - Number(amountReturned || 0);
 
   async function runAction(type, comments = "") {
     setProcessing(true);
@@ -132,15 +112,13 @@ export default function RequestDetail() {
       if (type === "budget") await api.post(`/budget/requests/${id}/commit`);
       if (type === "close") await api.post(`/requests/${id}/close`, { comments });
       if (type === "void") await api.post(`/requests/${id}/void`, { comments });
-      if (type === "rendition-validate") await api.post(`/requests/${id}/rendition/validate`, { comments });
-      if (type === "rendition-observe") await api.post(`/requests/${id}/rendition/observe`, { comments });
       if (type === "delete") {
         await api.delete(`/requests/${id}`);
         notify("Draft request permanently deleted.");
         navigate("/requests");
         return;
       }
-      notify({ approve: "Electronic approval recorded.", observe: "Request observed.", return: "Request returned for correction.", reject: "Request rejected.", budget: "Budget control completed.", close: "Request closed.", void: "Request annulled and any reservation was released.", "rendition-validate": "Rendition validated and actual expense posted.", "rendition-observe": "Rendition observed and returned for correction." }[type]);
+      notify({ approve: "Electronic approval recorded.", observe: "Request observed.", return: "Request returned for correction.", reject: "Request rejected.", budget: "Budget control completed.", close: "Request closed.", void: "Request annulled and any reservation was released." }[type]);
       setConfirm(null);
       await load();
     } catch (err) { setError(`${err.message}${err.code ? ` (${err.code})` : ""}`); notify(err.message, "error"); setConfirm(null); } finally { setProcessing(false); }
@@ -150,29 +128,6 @@ export default function RequestDetail() {
     setProcessing(true);
     try { await api.post(`/requests/${id}/submit`); notify("Request submitted for approval."); await load(); }
     catch (err) { setError(err.message); notify(err.message, "error"); } finally { setProcessing(false); }
-  }
-
-  function updateRenditionLine(index, field, value) {
-    setRenditionLines((current) => current.map((line, currentIndex) => currentIndex === index ? { ...line, [field]: value } : line));
-  }
-
-  async function submitRendition(event) {
-    event.preventDefault();
-    if (!renditionFiles.length) return notify("Select at least one rendition document.", "error");
-    if (!renditionLines.length || renditionLines.some((line) => !line.costCenter || !line.expenseType || Number(line.totalAmount || 0) <= 0)) return notify("Complete every rendition accounting line.", "error");
-    if (Math.abs(renditionBalance) > 0.009) return notify("Rendered plus returned amounts must equal the amount advanced.", "error");
-    setProcessing(true);
-    const data = new FormData();
-    renditionFiles.forEach((file) => data.append("rendition", file));
-    data.append("comments", renditionComments);
-    data.append("amountReturned", amountReturned || "0");
-    data.append("lines", JSON.stringify(renditionLines.map(({ clientId, ...line }) => line)));
-    try {
-      await api.post(`/requests/${id}/rendition`, data, { headers: { "Content-Type": "multipart/form-data" } });
-      notify("Rendition submitted for Accounting review. No expense is recognized until validation.");
-      setRenditionFiles([]);
-      await load();
-    } catch (err) { setError(err.message); notify(err.message, "error"); } finally { setProcessing(false); }
   }
 
   function decision(type) {
@@ -237,20 +192,17 @@ export default function RequestDetail() {
           {journalLines.length > 0 && <DataTable controls={false} rows={journalLines} columns={[{ key: "entryNumber", label: "Entry" }, { key: "entryType", label: "Type" }, { key: "accountNumber", label: "Account" }, { key: "description", label: "Description" }, { key: "debit", label: "Debit", align: "right", render: (row) => Number(row.debit || 0).toFixed(2) }, { key: "credit", label: "Credit", align: "right", render: (row) => Number(row.credit || 0).toFixed(2) }, { key: "period", label: "Period" }]} />}
         </div>
 
-        {request.requestType === "ENTREGA_RENDIR" && <div className="workspace-panel detail-section"><div className="section-heading"><div><h3>{t("Rendition")}</h3><p>{t("The advance remains in the configured transit account until Accounting validates actual evidence.")}</p></div><StatusBadge status={request.rendition?.status} /></div><dl className="detail-grid"><div><dt>{t("Amount advanced")}</dt><dd>{request.currency} {Number(request.rendition?.amountAdvanced || 0).toFixed(2)}</dd></div><div><dt>{t("Amount rendered")}</dt><dd>{request.currency} {Number(request.rendition?.amountRendered || 0).toFixed(2)}</dd></div><div><dt>{t("Amount returned")}</dt><dd>{request.currency} {Number(request.rendition?.amountReturned || 0).toFixed(2)}</dd></div><div><dt>{t("Outstanding balance")}</dt><dd>{request.currency} {Number(request.rendition?.balanceOutstanding || 0).toFixed(2)}</dd></div><div><dt>{t("Submitted")}</dt><dd>{request.rendition?.submittedAt ? new Date(request.rendition.submittedAt).toLocaleString() : "-"}</dd></div><div><dt>{t("Validated")}</dt><dd>{request.rendition?.validatedAt ? new Date(request.rendition.validatedAt).toLocaleString() : "-"}</dd></div></dl></div>}
+        {["ENTREGA_RENDIR", "REEMBOLSO_SIN_SUSTENTO"].includes(request.requestType) && <OfficialRenditionWorkspace request={request} masters={masters} user={user} onReload={load} />}
       </div>
 
       <aside className="request-detail-side">
-        {(permissions.modifiable || permissions.canApprove || permissions.canCommitBudget || permissions.canClose || permissions.canVoid || permissions.canSubmitRendition || permissions.canReviewRendition) && <div className="workspace-panel action-panel"><div className="section-heading"><div><h3>{t("Available actions")}</h3><p>{t("The backend revalidates permission, period, status, documents, supplier, fiscal, and budget controls.")}</p></div></div>
+        {(permissions.modifiable || permissions.canApprove || permissions.canCommitBudget || permissions.canClose || permissions.canVoid) && <div className="workspace-panel action-panel"><div className="section-heading"><div><h3>{t("Available actions")}</h3><p>{t("The backend revalidates permission, period, status, documents, supplier, fiscal, and budget controls.")}</p></div></div>
           {permissions.modifiable && <div className="action-item"><div><strong>{t("Submit for approval")}</strong><span>{missingDocuments.length ? t("Required documents are incomplete.") : t("Starts the configured approval route.")}</span></div><button type="button" className="primary-button" disabled={processing || missingDocuments.length > 0} title={missingDocuments.length ? t("Upload all required documents before submission.") : undefined} onClick={submitRequest}><Send size={16} /><span>{t("Submit")}</span></button></div>}
           {permissions.canApprove && <div className="action-buttons"><button type="button" className="primary-button" onClick={() => decision("approve")}><CheckCircle2 size={16} /><span>{t("Approve")}</span></button><button type="button" className="secondary-button" onClick={() => decision("observe")}><MessageSquareWarning size={16} /><span>{t("Observe")}</span></button><button type="button" className="secondary-button" onClick={() => decision("return")}><CornerUpLeft size={16} /><span>{t("Return")}</span></button><button type="button" className="danger-button subtle" onClick={() => decision("reject")}><XCircle size={16} /><span>{t("Reject")}</span></button></div>}
           {permissions.canCommitBudget && <button type="button" className="primary-button" onClick={() => setConfirm({ type: "budget", title: "Commit this request budget?", description: "The backend will validate every budget dimension and exception rule before reserving funds.", confirmLabel: "Commit budget", details: [{ label: "Request", value: request.requestNumber }, { label: "Result", value: "Successful commitment changes the request to COMPROMISO_PRESUPUESTAL." }] })}><CheckCircle2 size={16} /><span>{t("Commit budget")}</span></button>}
           {permissions.canClose && <button type="button" className="primary-button" onClick={() => setConfirm({ type: "close", title: "Close this request?", description: "Only a reconciled request in an open permitted period can be closed.", confirmLabel: "Close request", inputLabel: "Closing comments", details: [{ label: "Request", value: request.requestNumber }, { label: "Result", value: "Status changes from CONCILIADO to CERRADO." }] })}><CheckCircle2 size={16} /><span>{t("Close request")}</span></button>}
           {permissions.canVoid && <button type="button" className="danger-button subtle" onClick={() => setConfirm({ type: "void", title: "Annul this request?", description: "Any unexecuted reservation is released idempotently and the action is audited.", confirmLabel: "Annul request", tone: "danger", inputLabel: "Annulment reason", inputRequired: true, details: [{ label: "Request", value: request.requestNumber }, { label: "Result", value: "Status changes to ANULADO." }] })}><Trash2 size={16} /><span>{t("Annul request")}</span></button>}
-          {permissions.canReviewRendition && <div className="action-buttons"><button type="button" className="primary-button" onClick={() => setConfirm({ type: "rendition-validate", title: "Validate rendition?", description: "This posts the actual expense, applicable IGV and return, then clears the configured advance transit account.", confirmLabel: "Validate rendition", inputLabel: "Validation comments", details: [{ label: "Balance", value: `${request.currency} ${Number(request.rendition.balanceOutstanding || 0).toFixed(2)}` }, { label: "Result", value: "A balanced RENDITION journal is posted; reconciliation is still required." }] })}><FileCheck2 size={16} /><span>{t("Validate rendition")}</span></button><button type="button" className="danger-button subtle" onClick={() => setConfirm({ type: "rendition-observe", title: "Observe rendition?", description: "Return the evidence to the requester for correction.", confirmLabel: "Observe rendition", inputLabel: "Observation comments", inputRequired: true, tone: "danger", details: [{ label: "Request", value: request.requestNumber }, { label: "Result", value: "Rendition status changes to OBSERVED." }] })}><MessageSquareWarning size={16} /><span>{t("Observe")}</span></button></div>}
         </div>}
-
-        {permissions.canSubmitRendition && <div className="workspace-panel action-panel"><div className="section-heading"><div><h3>{t("Submit rendition")}</h3><p>{t("Rendered plus returned amounts must equal the advance.")}</p></div></div><form className="rendition-form" onSubmit={submitRendition}>{renditionLines.map((line, index) => <div className="rendition-line" key={line.clientId}><strong>{t("Line")} {index + 1}</strong><label className="field"><span>{t("Cost center")} *</span><select required value={line.costCenter} onChange={(event) => updateRenditionLine(index, "costCenter", event.target.value)}><option value="">{t("Select")}</option>{masters.costCenters.map((item) => <option key={item._id} value={item._id}>{item.code} - {item.name}</option>)}</select></label><label className="field"><span>{t("Expense account")} *</span><select required value={line.expenseType} onChange={(event) => updateRenditionLine(index, "expenseType", event.target.value)}><option value="">{t("Select")}</option>{masters.expenseTypes.map((item) => <option key={item._id} value={item._id}>{item.accountNumber} - {item.name}</option>)}</select></label><label className="field"><span>{t("Net")} *</span><input type="number" min="0" step="0.01" value={line.netAmount} onChange={(event) => updateRenditionLine(index, "netAmount", event.target.value)} /></label><label className="field"><span>{t("IGV")} *</span><input type="number" min="0" step="0.01" value={line.igvAmount} onChange={(event) => updateRenditionLine(index, "igvAmount", event.target.value)} /></label><label className="field"><span>{t("Total")} *</span><input type="number" min="0.01" step="0.01" value={line.totalAmount} onChange={(event) => updateRenditionLine(index, "totalAmount", event.target.value)} /></label></div>)}<label className="field"><span>{t("Amount returned")}</span><input type="number" min="0" step="0.01" value={amountReturned} onChange={(event) => setAmountReturned(event.target.value)} /></label><div className={`rendition-balance ${Math.abs(renditionBalance) > 0.009 ? "invalid" : "valid"}`}><span>{t("Outstanding balance")}</span><strong>{request.currency} {renditionBalance.toFixed(2)}</strong></div><label className="field"><span>{t("Rendition evidence")} *</span><input type="file" multiple required onChange={(event) => setRenditionFiles(Array.from(event.target.files || []))} /><small className="field-hint">{renditionFiles.length ? t("{count} files selected").replace("{count}", renditionFiles.length) : t("Receipts and supporting documents are required.")}</small></label><label className="field"><span>{t("Comments")}</span><textarea rows="3" value={renditionComments} onChange={(event) => setRenditionComments(event.target.value)} /></label><button type="submit" className="primary-button" disabled={processing || !renditionFiles.length || Math.abs(renditionBalance) > 0.009}><FileUp size={16} /><span>{t("Submit rendition")}</span></button></form></div>}
 
         <div className="workspace-panel timeline-panel"><div className="section-heading"><div><h3>{t("Approval timeline")}</h3><p>{t("Electronic sign-offs, SLA dates, and workflow decisions.")}</p></div></div><ApprovalTimeline history={[...(request.approvalHistory || [])].reverse()} /></div>
         <div className="workspace-panel timeline-panel"><div className="section-heading"><div><h3>{t("Immutable audit")}</h3><p>{t("Application audit records are append-only.")}</p></div></div><div className="compact-lines">{(related.audit || []).slice().reverse().map((item) => <div key={item._id}><span>{new Date(item.createdAt).toLocaleString()} - {item.user?.name || "System"}</span><strong>{item.action}</strong></div>)}{!related.audit?.length && <p>{t("No audit events available.")}</p>}</div></div>

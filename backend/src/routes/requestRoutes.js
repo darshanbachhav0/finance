@@ -1,15 +1,19 @@
 import { Router } from "express";
 import {
   closeRequest,
+  approveRendition,
   createRequest,
   deleteRequest,
   getAuthorizedCostCenters,
   getBudgetPreview,
   getRequestDocumentRequirements,
   getRequestFormPolicy,
+  getRenditionFormPolicy,
+  getRenditionPaymentDestination,
   getRequest,
   listRequests,
   observeRendition,
+  rejectRendition,
   submitRequest,
   updateRequest,
   uploadRendition,
@@ -32,8 +36,12 @@ router.route("/").get(listRequests).post(authorize(...REQUEST_CREATOR_ROLES), up
 router.route("/:id").get(getRequest).put(uploadFields, updateRequest).delete(deleteRequest);
 router.post("/:id/submit", submitRequest);
 router.post("/:id/rendition", authorize(ROLES.ADMIN, ROLES.SOLICITOR), uploadFields, uploadRendition);
+router.get("/:id/rendition/policy", getRenditionFormPolicy);
+router.get("/:id/rendition/bank-destination", getRenditionPaymentDestination);
+router.post("/:id/rendition/approve", authorize(ROLES.ADMIN, ROLES.ACCOUNTING), approveRendition);
 router.post("/:id/rendition/validate", authorize(ROLES.ADMIN, ROLES.ACCOUNTING), validateRendition);
 router.post("/:id/rendition/observe", authorize(ROLES.ADMIN, ROLES.ACCOUNTING), observeRendition);
+router.post("/:id/rendition/reject", authorize(ROLES.ADMIN, ROLES.ACCOUNTING), rejectRendition);
 router.post("/:id/close", authorize(ROLES.ADMIN, ROLES.ACCOUNTING), closeRequest);
 router.post("/:id/void", authorize(ROLES.ADMIN, ROLES.ACCOUNTING), voidRequest);
 

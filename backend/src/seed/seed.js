@@ -1061,6 +1061,34 @@ async function moveToAccounting(request, users, sequence, accountNumber) {
   if (current.status !== REQUEST_STATUS.BUDGET_COMMITTED) {
     throw new Error(`${current.requestNumber} did not reach budget commitment; current status ${current.status}.`);
   }
+  if (current.requestType === REQUEST_TYPE.REEMBOLSO_SIN_SUSTENTO && !current.rendition?.number) {
+    await submitRendition({
+      requestId: current._id,
+      payload: {
+        unsupportedExpenseLines: [{
+          date: currentDate,
+          description: current.description,
+          goodsServiceType: "SERVICES",
+          grossAmount: current.totalAmount
+        }],
+        confirmedExceptionalUse: true,
+        exceptionalUseComments: "Declaración excepcional DEMO del colaborador UMA.",
+        beneficiaryAcknowledged: true,
+        comments: "Detalle oficial de reembolso sin sustento enviado para revisión financiera."
+      },
+      files: {},
+      user: users.solicitorHealth,
+      req: fakeReq
+    });
+    await reviewRendition({
+      requestId: current._id,
+      action: "APPROVE",
+      comments: "Detalle oficial revisado manualmente por Contabilidad.",
+      user: users.accounting,
+      req: fakeReq
+    });
+    current = await refresh(current);
+  }
   await processAccountsPayable({
     requestId: current._id,
     payload: accountingPayload(current, sequence, accountNumber),
@@ -1412,6 +1440,15 @@ async function seedScenarios({ users, suppliers, costCenters, expenseTypes }) {
           totalAmount: 4720
         }],
         amountReturned: 0,
+        unsupportedExpenseLines: [{
+          date: currentDate,
+          description: "Gastos locales de la jornada de investigación sin comprobante fiscal disponible.",
+          goodsServiceType: "SERVICES",
+          grossAmount: 4720
+        }],
+        confirmedExceptionalUse: true,
+        exceptionalUseComments: "Uso excepcional declarado para la demostración UMA.",
+        beneficiaryAcknowledged: true,
         comments: "Rendición completa con comprobantes DEMO."
       },
       files: {

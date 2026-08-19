@@ -23,6 +23,7 @@ const BudgetControl = lazy(() => import("./pages/BudgetControl.jsx"));
 const ManagementReports = lazy(() => import("./pages/ManagementReports.jsx"));
 const MasterConfiguration = lazy(() => import("./pages/MasterConfiguration.jsx"));
 const AuditViewer = lazy(() => import("./pages/AuditViewer.jsx"));
+const EmployeeReimbursementBanking = lazy(() => import("./pages/EmployeeReimbursementBanking.jsx"));
 
 function RouteFallback() {
   return (
@@ -63,6 +64,9 @@ export default function App() {
           </Route>
           <Route path="treasury" element={<ProtectedRoute roles={["Admin", "Treasury"]} />}>
             <Route index element={<TreasuryQueue />} />
+          </Route>
+          <Route path="reimbursement-bank" element={<ProtectedRoute roles={["Admin", "Solicitor", "Accounting", "Treasury"]} />}>
+            <Route index element={<EmployeeReimbursementBanking />} />
           </Route>
           <Route path="budget" element={<ProtectedRoute roles={["Admin", "Approver", "Accounting", "Budget", "Management"]} />}>
             <Route index element={<BudgetControl />} />

@@ -14,7 +14,12 @@ import {
   updateFinancialRequest,
   voidFinancialRequest
 } from "../services/requestService.js";
-import { reviewRendition, submitRendition } from "../services/renditionService.js";
+import {
+  getRenditionBankDestination,
+  getRenditionPolicy,
+  reviewRendition,
+  submitRendition
+} from "../services/renditionService.js";
 
 export const listRequests = asyncHandler(async (req, res) => {
   const result = await listRequestsPage(req.query, req.user);
@@ -97,3 +102,13 @@ function renditionReviewHandler(action) {
 
 export const validateRendition = renditionReviewHandler("VALIDATE");
 export const observeRendition = renditionReviewHandler("OBSERVE");
+export const approveRendition = renditionReviewHandler("APPROVE");
+export const rejectRendition = renditionReviewHandler("REJECT");
+
+export const getRenditionFormPolicy = asyncHandler(async (req, res) => {
+  res.json({ data: await getRenditionPolicy({ requestId: req.params.id, date: req.query.date, user: req.user }) });
+});
+
+export const getRenditionPaymentDestination = asyncHandler(async (req, res) => {
+  res.json({ data: await getRenditionBankDestination({ requestId: req.params.id, user: req.user }) });
+});

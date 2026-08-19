@@ -15,6 +15,7 @@ export const navigationAccess = Object.freeze({
   "/accounting": ["Admin", "Accounting"],
   "/accounting/payables": ["Admin", "Accounting"],
   "/treasury": ["Admin", "Treasury"],
+  "/reimbursement-bank": ["Admin", "Solicitor", "Accounting", "Treasury"],
   "/budget": ["Admin", "Approver", "Accounting", "Budget", "Management"],
   "/accounting/periods": ["Admin", "Accounting"],
   "/accounting/sire": ["Admin", "Accounting"],

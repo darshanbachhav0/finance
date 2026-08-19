@@ -265,6 +265,18 @@ export async function processAccountsPayable({ requestId, payload, user, req }) 
   if (request.status !== REQUEST_STATUS.BUDGET_COMMITTED) {
     throw new AppError(409, "Only budget-committed requests can be processed by Accounting.", { status: request.status }, ERROR_CODES.INVALID_STATUS_TRANSITION);
   }
+  if (
+    request.requestType === REQUEST_TYPE.REEMBOLSO_SIN_SUSTENTO
+    && request.rendition?.number
+    && (request.rendition?.status !== "VALIDATED" || request.rendition?.financeReview?.result !== "APPROVED")
+  ) {
+    throw new AppError(
+      422,
+      "The official unsupported-reimbursement detail requires Finance approval before Accounting processing.",
+      { renditionStatus: request.rendition?.status, financeReview: request.rendition?.financeReview?.result },
+      ERROR_CODES.RENDITION_REQUIRED
+    );
+  }
   const supplierIdentifier = request.supplier?.normalizedIdentifier || request.supplier?.rucDni || request.supplierSnapshot?.identifier;
   const fiscal = fiscalPayload(payload, supplierIdentifier);
   await guardAccountingPeriod({ period: request.accountingPeriod, action: "ACCOUNT", user, req, module: "ACCOUNTING", entityType: "FinancialRequest", entityId: request._id, requestId: request._id });

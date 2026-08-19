@@ -7,3 +7,4 @@ import "./financialLifecycle.test.js";
 import "./officialFormatsFoundation.test.js";
 import "./supplierPhase2.test.js";
 import "./requestPhase3.test.js";
+import "./renditionPhase4.test.js";

@@ -49,6 +49,7 @@ const groups = [
     label: "Finance",
     items: [
       { label: "Accounting Entries", path: "/accounting", icon: FileSpreadsheet, counter: "accounting" },
+      { label: "Reimbursement Banking", path: "/reimbursement-bank", icon: CircleDollarSign },
       { label: "Accounts Payable", path: "/accounting/payables", icon: BookOpenCheck },
       { label: "Treasury", path: "/treasury", icon: Landmark, counter: "payable" },
       { label: "Budget Control", path: "/budget", icon: WalletCards, counter: "budgetExceptions" },
@@ -84,6 +85,7 @@ const routeTitles = [
   [/^\/requests/, "Requests"],
   [/^\/approvals/, "Approval Inbox"],
   [/^\/treasury/, "Treasury Payment Queue"],
+  [/^\/reimbursement-bank/, "Employee Reimbursement Banking"],
   [/^\/budget/, "Budget Control"],
   [/^\/reports/, "Management Reports"],
   [/^\/accounting\/periods/, "Accounting Periods"],
