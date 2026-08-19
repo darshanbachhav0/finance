@@ -16,6 +16,7 @@ import { applyExchangeRate } from "./exchangeRateService.js";
 import { guardAccountingPeriod } from "./periodService.js";
 import { notifyRoles, notifyUser, resolveNotification } from "./notificationService.js";
 import { generatePurchaseOrder } from "./purchaseOrderService.js";
+import { assertSupplierUsable } from "./supplierService.js";
 import { escapedRegex, paginatedPayload, parsePagination, parseSort } from "./queryService.js";
 import { requestListPopulate, requestListSelect, requestPopulate } from "./requestService.js";
 import { runFinancialOperation } from "./transactionService.js";
@@ -185,6 +186,8 @@ export async function commitApprovedRequestBudget({ request, user, req }) {
       ERROR_CODES.INVALID_STATUS_TRANSITION
     );
   }
+  const supplier = request.supplier?._id ? request.supplier : await Supplier.findById(request.supplier);
+  assertSupplierUsable(supplier);
   const result = await runFinancialOperation(async (session) => {
     const commitment = await reserveBudget(request, user._id, { session });
     request.budgetCommitment = commitment._id;
@@ -323,7 +326,7 @@ export async function decideApproval({ id, action, comments, adminOverrideReason
     try {
       await commitApprovedRequestBudget({ request, user, req });
     } catch (error) {
-      if (error.code !== ERROR_CODES.INSUFFICIENT_BUDGET) throw error;
+      if (![ERROR_CODES.INSUFFICIENT_BUDGET, ERROR_CODES.SUPPLIER_NOT_HOMOLOGATED, ERROR_CODES.SUPPLIER_REJECTED, ERROR_CODES.SUPPLIER_INACTIVE].includes(error.code)) throw error;
       budgetWarning = { code: error.code, message: error.message, details: error.details };
       await recordAudit({
         entityType: "FinancialRequest",

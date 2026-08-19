@@ -33,6 +33,65 @@ export function groupedRequestLines(request) {
   return [...grouped.values()].map((line) => ({ ...line, amount: roundMoney(line.amount) }));
 }
 
+export async function previewBudget(request) {
+  const grouped = groupedRequestLines(request);
+  if (!grouped.length || !request.accountingPeriod) {
+    return { status: "PENDING_VALIDATION", totalRequested: 0, lines: [] };
+  }
+
+  const centers = await CostCenter.find({ _id: { $in: grouped.map((line) => line.costCenter) } });
+  const centerMap = new Map(centers.map((center) => [String(center._id), center]));
+  const lines = [];
+
+  for (const line of grouped) {
+    const center = centerMap.get(String(line.costCenter));
+    if (!center?.active || !line.expenseType) {
+      lines.push({
+        ...line,
+        status: "PENDING_VALIDATION",
+        costCenterSnapshot: center ? { code: center.code, name: center.name, area: center.area } : undefined
+      });
+      continue;
+    }
+    const [rule, allocation] = await Promise.all([
+      resolveRule(line, center, request.issueDate),
+      findAllocation(request.accountingPeriod, line)
+    ]);
+    const assigned = roundMoney(allocation?.assignedAmount ?? center.annualBudget ?? 0);
+    const committed = roundMoney(allocation?.committedAmount ?? center.committedAmount ?? 0);
+    const executed = roundMoney(allocation?.executedAmount ?? center.executedAmount ?? 0);
+    const paid = roundMoney(allocation?.paidAmount ?? center.paidAmount ?? 0);
+    const available = subtractMoney(subtractMoney(assigned, committed), executed);
+    const projectedBalance = subtractMoney(available, line.amount);
+    const mode = rule.mode || "TRANSITIONAL";
+    lines.push({
+      ...line,
+      mode,
+      exceptionStrategy: rule.exceptionStrategy || "REJECT",
+      source: allocation ? "BUDGET_ALLOCATION" : "COST_CENTER",
+      allocation: allocation?._id,
+      costCenterSnapshot: { code: center.code, name: center.name, area: center.area },
+      assigned,
+      committed,
+      executed,
+      paid,
+      available,
+      projectedBalance,
+      status: mode === "TRANSITIONAL" ? "TRANSITIONAL" : projectedBalance >= 0 ? "AVAILABLE" : "INSUFFICIENT"
+    });
+  }
+
+  const complete = lines.every((line) => line.status !== "PENDING_VALIDATION");
+  const insufficient = lines.some((line) => line.status === "INSUFFICIENT");
+  return {
+    status: !complete ? "PENDING_VALIDATION" : insufficient ? "INSUFFICIENT" : lines.every((line) => line.mode === "TRANSITIONAL") ? "TRANSITIONAL" : "AVAILABLE",
+    totalRequested: sumMoney(lines.map((line) => line.amount || 0)),
+    totalAvailable: complete ? sumMoney(lines.map((line) => line.available || 0)) : null,
+    projectedBalance: complete ? sumMoney(lines.map((line) => line.projectedBalance || 0)) : null,
+    lines
+  };
+}
+
 async function resolveRule(line, center, requestDate) {
   const date = new Date(requestDate || Date.now());
   const rules = await BudgetRule.find({

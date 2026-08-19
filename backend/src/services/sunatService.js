@@ -11,7 +11,11 @@ export function getSunatProvider(mode = process.env.SUNAT_PROVIDER_MODE || "MANU
 export const sunatService = {
   status() {
     const provider = getSunatProvider();
-    return { mode: provider.mode, configured: provider.configured };
+    return {
+      mode: provider.mode,
+      configured: provider.configured,
+      state: provider.configured ? provider.mode : "NOT_CONFIGURED"
+    };
   },
   validateTaxpayer(identifier, context) {
     return getSunatProvider().validateTaxpayer(identifier, context);
@@ -23,4 +27,3 @@ export const sunatService = {
     return getSunatProvider().getSellingExchangeRate(input, context);
   }
 };
-

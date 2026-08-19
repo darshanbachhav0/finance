@@ -55,6 +55,12 @@ supplierBankAccountSchema.pre("validate", function normalizeBankData() {
   if (this.validTo && this.validFrom && this.validTo < this.validFrom) {
     this.invalidate("validTo", "Valid-to date cannot be earlier than valid-from date.");
   }
+  if (this.accountType === "DETRACTION" && this.bank !== "BANCO_NACION") {
+    this.invalidate("bank", "Detraction accounts must use Banco de la Nacion.");
+  }
+  if (!this.active && this.preferred) {
+    this.invalidate("preferred", "An inactive bank account cannot be preferred.");
+  }
 });
 
 supplierBankAccountSchema.index({ supplier: 1, active: 1 });

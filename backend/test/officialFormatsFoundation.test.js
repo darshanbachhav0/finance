@@ -202,8 +202,10 @@ test("official UMA format Phase 1 foundations remain additive and migration-safe
         rucDni: "20600000023",
         legalName: "Homologation Foundation SAC",
         name: "Homologation Foundation SAC",
+        personType: "LEGAL_ENTITY",
         taxAddress: "Lima",
         legalRepresentative: "Representative",
+        legalRepresentativeDocument: { type: "DNI", number: "40000001" },
         bankName: "BCP",
         bankAccount: "191000000001",
         cci: "00219100000000000001",
@@ -211,11 +213,31 @@ test("official UMA format Phase 1 foundations remain additive and migration-safe
         taxpayerStatus: "MANUALLY_VALIDATED",
         complianceStatus: "COMPLIANT",
         compliance: { taxpayerActive: true, compliant: true },
+        complianceReview: { result: "APPROVED", reviewedBy: admin._id, reviewedAt: new Date(), comments: "Foundation review" },
+        declarations: {
+          stateSanctions: { answer: "NO", declaredAt: new Date() },
+          complianceModel: { answer: "YES", declaredAt: new Date() }
+        },
         documents: [
           { kind: "RUC_FILE", originalName: "ruc.pdf" },
           { kind: "BANK_CERTIFICATE", originalName: "bank.pdf" },
           { kind: "LEGAL_REP_ID", originalName: "id.pdf" }
         ]
+      });
+      await addVerifiedSupplierBankAccount({
+        supplier,
+        payload: {
+          bank: "BCP",
+          currency: "PEN",
+          accountType: "CURRENT",
+          accountNumber: "191000000001",
+          cci: "00219100000000000001",
+          preferred: true,
+          accountHolderName: supplier.legalName,
+          ownershipResult: "MATCH"
+        },
+        user: admin,
+        req
       });
       const result = await updateAndReviewSupplier({
         supplierId: supplier._id,
@@ -235,7 +257,8 @@ test("official UMA format Phase 1 foundations remain additive and migration-safe
           accountNumber: "000123456789",
           cci: "01800001234567890001",
           preferred: true,
-          accountHolderName: result.supplier.legalName
+          accountHolderName: result.supplier.legalName,
+          ownershipResult: "MATCH"
         },
         user: admin
       });

@@ -3,7 +3,10 @@ import {
   closeRequest,
   createRequest,
   deleteRequest,
+  getAuthorizedCostCenters,
+  getBudgetPreview,
   getRequestDocumentRequirements,
+  getRequestFormPolicy,
   getRequest,
   listRequests,
   observeRendition,
@@ -22,6 +25,9 @@ const router = Router();
 
 router.use(protect);
 router.get("/document-requirements", getRequestDocumentRequirements);
+router.get("/form-policy", getRequestFormPolicy);
+router.get("/authorized-cost-centers", authorize(...REQUEST_CREATOR_ROLES), getAuthorizedCostCenters);
+router.post("/budget-preview", authorize(...REQUEST_CREATOR_ROLES), getBudgetPreview);
 router.route("/").get(listRequests).post(authorize(...REQUEST_CREATOR_ROLES), uploadFields, createRequest);
 router.route("/:id").get(getRequest).put(uploadFields, updateRequest).delete(deleteRequest);
 router.post("/:id/submit", submitRequest);

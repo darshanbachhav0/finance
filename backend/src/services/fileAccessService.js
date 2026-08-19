@@ -1,5 +1,6 @@
 import path from "path";
 import FinancialRequest from "../models/FinancialRequest.js";
+import Supplier from "../models/Supplier.js";
 import { AppError } from "../utils/AppError.js";
 import { ERROR_CODES, ROLES } from "../utils/constants.js";
 import { canViewRequest, canViewSuppliers } from "../utils/permissions.js";
@@ -44,6 +45,12 @@ export async function assertStoredAssetAccess(asset, user) {
   }
   if (asset.kind === "uploads" && asset.segments[0] === "suppliers") {
     if (!canViewSuppliers(user.role)) throw forbidden();
+    if (user.role === ROLES.SOLICITOR) {
+      const supplier = await Supplier.findById(asset.segments[1]).select("proposedBy homologationStatus");
+      if (!supplier || String(supplier.proposedBy || "") !== String(user._id) || !["PENDING_VALIDATION", "OBSERVED"].includes(supplier.homologationStatus)) {
+        throw forbidden();
+      }
+    }
     return;
   }
   if (asset.kind === "generated") {

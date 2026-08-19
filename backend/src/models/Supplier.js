@@ -76,6 +76,9 @@ const supplierDocumentSchema = new mongoose.Schema(
 const supplierSchema = new mongoose.Schema(
   {
     supplierCode: { type: String, trim: true, uppercase: true, unique: true, sparse: true, match: /^PRV-\d{4,}$/ },
+    proposedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    proposedAt: Date,
+    proposalJustification: { type: String, trim: true, default: "" },
     identifierType: { type: String, enum: ["RUC", "DNI"], required: true, default: "RUC" },
     personType: { type: String, enum: SUPPLIER_PERSON_TYPES },
     rucDni: { type: String, required: true, unique: true, trim: true },
@@ -118,6 +121,19 @@ const supplierSchema = new mongoose.Schema(
     bankAccount: { type: String, trim: true },
     cci: { type: String, trim: true },
     taxpayerStatus: { type: String, enum: ["PENDING", "ACTIVE", "INACTIVE", "NOT_CONFIGURED", "MANUALLY_VALIDATED"], default: "PENDING" },
+    taxpayerValidation: {
+      status: { type: String, enum: ["NOT_VERIFIED", "VALID", "INVALID"], default: "NOT_VERIFIED" },
+      providerMode: { type: String, enum: ["NOT_CONFIGURED", "MANUAL", "MOCK", "PRODUCTION"], default: "NOT_CONFIGURED" },
+      providerConfigured: { type: Boolean, default: false },
+      source: { type: String, trim: true, default: "" },
+      returnedIdentifier: { type: String, trim: true, default: "" },
+      returnedLegalName: { type: String, trim: true, default: "" },
+      identifierMatch: { type: String, enum: ["MATCH", "MISMATCH", "NOT_VERIFIED"], default: "NOT_VERIFIED" },
+      legalNameMatch: { type: String, enum: ["MATCH", "MISMATCH", "NOT_VERIFIED"], default: "NOT_VERIFIED" },
+      validatedAt: Date,
+      validatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+      comments: { type: String, trim: true, default: "" }
+    },
     complianceStatus: { type: String, enum: ["PENDING", "COMPLIANT", "NON_COMPLIANT", "OBSERVED"], default: "PENDING" },
     homologationStatus: { type: String, enum: SUPPLIER_HOMOLOGATION_STATUSES, default: "PENDING_VALIDATION", index: true },
     active: { type: Boolean, default: false },
@@ -172,5 +188,6 @@ supplierSchema.pre("save", async function protectAssignedSupplierCode() {
 });
 
 supplierSchema.index({ active: 1, homologationStatus: 1, name: 1 });
+supplierSchema.index({ proposedBy: 1, homologationStatus: 1, createdAt: -1 });
 
 export default mongoose.model("Supplier", supplierSchema);

@@ -1,6 +1,8 @@
 import FinancialRequest from "../models/FinancialRequest.js";
 import Supplier from "../models/Supplier.js";
 import User from "../models/User.js";
+import CostCenter from "../models/CostCenter.js";
+import Project from "../models/Project.js";
 import AuditLog from "../models/AuditLog.js";
 import AccountsPayable from "../models/AccountsPayable.js";
 import JournalEntry from "../models/JournalEntry.js";
@@ -9,25 +11,32 @@ import Reconciliation from "../models/Reconciliation.js";
 import { recordAudit, workflowEvent } from "./auditService.js";
 import { validateAccountingDimensions } from "./accountingDimensionService.js";
 import { initializeApprovalRoute } from "./approvalRuleService.js";
-import { assertConfiguredDocuments, configuredDocumentRequirements } from "./documentRuleService.js";
+import {
+  assertConfiguredDocuments,
+  configuredDocumentRequirements,
+  configuredQuotationPolicy,
+  validateStructuredQuotationComparison
+} from "./documentRuleService.js";
 import { applyExchangeRate } from "./exchangeRateService.js";
 import { guardAccountingPeriod, periodFromDate } from "./periodService.js";
 import { notifyRoles, resolveNotification } from "./notificationService.js";
 import { escapedRegex, paginatedPayload, parsePagination, parseSort } from "./queryService.js";
 import { assertRequestLines } from "./requestRules.js";
 import { cleanupUploadedFiles, persistUploadedFiles } from "./storageService.js";
-import { assertSupplierUsable } from "./supplierService.js";
+import { assertSupplierEligibleForRequestReview, assertSupplierUsable } from "./supplierService.js";
 import { transitionRequest } from "./workflowService.js";
 import { validateXmlAgainstRequest } from "./xmlValidationService.js";
-import { releaseBudget } from "./budgetService.js";
+import { previewBudget, releaseBudget } from "./budgetService.js";
 import { AppError } from "../utils/AppError.js";
 import {
   ERROR_CODES,
   MANDATORY_XML_TYPES,
   REQUEST_STATUS,
+  REQUEST_TYPE,
   ROLES
 } from "../utils/constants.js";
-import { canModifyRequest, canViewRequest } from "../utils/permissions.js";
+import { canModifyRequest, canUseCostCenter, canViewRequest } from "../utils/permissions.js";
+import { multiplyMoney } from "../utils/money.js";
 
 export const requestPopulate = [
   { path: "supplier" },
@@ -36,7 +45,7 @@ export const requestPopulate = [
   { path: "requesterCostCenter" },
   { path: "lines.costCenter" },
   { path: "lines.expenseType" },
-  { path: "quotations.supplier", select: "supplierCode name commercialName legalName rucDni normalizedIdentifier homologationStatus" },
+  { path: "quotations.supplier", select: "supplierCode name commercialName legalName rucDni normalizedIdentifier homologationStatus active taxpayerStatus taxpayerValidation" },
   { path: "approvalHistory.actor", select: "name email role approvalLevel" },
   { path: "approvalRouteSnapshot.completedBy", select: "name email role approvalLevel" },
   { path: "budgetCommitment" },
@@ -108,7 +117,7 @@ export function parseRequestLines(value) {
   }));
 }
 
-function parseQuotations(value) {
+export function parseQuotations(value) {
   const parsed = parseJson(value, "quotations") || [];
   if (!Array.isArray(parsed)) throw new AppError(400, "quotations must be an array.", { field: "quotations" }, ERROR_CODES.VALIDATION_ERROR);
   return parsed.map((quotation) => ({
@@ -121,6 +130,33 @@ function parseQuotations(value) {
     attachment: quotation.attachment?._id || quotation.attachment,
     recommended: parseBoolean(quotation.recommended)
   }));
+}
+
+function optionalNumber(value) {
+  return value === "" || value === undefined || value === null ? undefined : Number(value);
+}
+
+function parseCapexDetails(value) {
+  const parsed = parseJson(value, "capexDetails") || {};
+  return {
+    projectPep: parsed.projectPep || "",
+    projectSnapshot: { id: parsed.projectSnapshot?.id?._id || parsed.projectSnapshot?.id || parsed.projectId || undefined },
+    assetCategory: parsed.assetCategory || undefined,
+    usefulLifeYears: optionalNumber(parsed.usefulLifeYears),
+    npv: {
+      amount: optionalNumber(parsed.npv?.amount),
+      currency: parsed.npv?.currency || undefined
+    },
+    payback: {
+      value: optionalNumber(parsed.payback?.value),
+      unit: parsed.payback?.unit || undefined
+    }
+  };
+}
+
+function parseOpexDetails(value) {
+  const parsed = parseJson(value, "opexDetails") || {};
+  return { expenseFrequency: parsed.expenseFrequency || undefined };
 }
 
 function mapAttachments(files, userId) {
@@ -155,13 +191,131 @@ async function applyQuotationSnapshots(request) {
   const byId = new Map(suppliers.map((supplier) => [String(supplier._id), supplier]));
   for (const quotation of request.quotations || []) {
     const supplier = byId.get(String(quotation.supplier?._id || quotation.supplier || ""));
-    if (!supplier) continue;
+    if (!quotation.supplier) continue;
+    if (!supplier) {
+      throw new AppError(404, "A quotation supplier was not found.", { supplier: quotation.supplier }, ERROR_CODES.NOT_FOUND);
+    }
     quotation.supplierSnapshot = {
       identifierType: supplier.identifierType,
       identifier: supplier.normalizedIdentifier || supplier.rucDni,
       legalName: supplier.legalName || supplier.name
     };
   }
+}
+
+function linkQuotationEvidence(request) {
+  const evidence = (request.attachments || []).filter((attachment) => attachment.kind === "QUOTATION");
+  const byId = new Map(evidence.map((attachment) => [String(attachment._id), attachment]));
+  const used = new Set();
+  for (const quotation of request.quotations || []) {
+    const id = String(quotation.attachment?._id || quotation.attachment || "");
+    if (id && byId.has(id) && !used.has(id)) {
+      quotation.attachment = byId.get(id)._id;
+      used.add(id);
+    } else {
+      quotation.attachment = undefined;
+    }
+  }
+  const available = evidence.filter((attachment) => !used.has(String(attachment._id)));
+  for (const quotation of request.quotations || []) {
+    if (quotation.attachment || !available.length) continue;
+    const attachment = available.shift();
+    quotation.attachment = attachment._id;
+  }
+}
+
+async function applyProjectSnapshot(request) {
+  if (request.requestType !== REQUEST_TYPE.CAPEX) {
+    request.capexDetails = {};
+    return;
+  }
+  request.opexDetails = {};
+  const projectId = request.capexDetails?.projectSnapshot?.id?._id || request.capexDetails?.projectSnapshot?.id;
+  if (!projectId) return;
+  const project = await Project.findOne({ _id: projectId, active: true });
+  if (!project) throw new AppError(422, "Select an active Project / PEP.", { project: projectId }, ERROR_CODES.VALIDATION_ERROR);
+  request.capexDetails.projectSnapshot = { id: project._id, code: project.code, name: project.name };
+  request.capexDetails.projectPep ||= project.code;
+  request.project = project.code;
+}
+
+async function validateHeaderCostCenter(request, user, { required = false } = {}) {
+  const id = request.requesterCostCenter?._id || request.requesterCostCenter;
+  if (!id) {
+    if (!required) return null;
+    throw new AppError(422, "A request Cost Center / CECO is required.", { field: "requesterCostCenter" }, ERROR_CODES.INVALID_COST_CENTER);
+  }
+  const center = await CostCenter.findById(id);
+  if (!center?.active) {
+    throw new AppError(422, "Select an active Cost Center / CECO.", { costCenter: id }, ERROR_CODES.INVALID_COST_CENTER);
+  }
+  if (user.role === ROLES.SOLICITOR && !canUseCostCenter(user, center._id)) {
+    throw new AppError(
+      403,
+      `CECO ${center.code} - ${center.name} is not assigned to the current requester.`,
+      { costCenter: center._id, code: center.code, name: center.name, area: center.area },
+      ERROR_CODES.INVALID_COST_CENTER
+    );
+  }
+  request.requesterCostCenter = center._id;
+  return center;
+}
+
+function assertOfficialRequestFields(request) {
+  const required = [
+    ["title", "TITLE_REQUIRED", "Requirement title is required."],
+    ["detailedDescription", "DETAILED_DESCRIPTION_REQUIRED", "Detailed description is required."],
+    ["businessJustification", "BUSINESS_JUSTIFICATION_REQUIRED", "Business justification is required."],
+    ["nonApprovalRisk", "NON_APPROVAL_RISK_REQUIRED", "Risk if not approved is required."]
+  ];
+  for (const [field, code, message] of required) {
+    if (!String(request[field] || "").trim()) throw new AppError(422, message, { field }, ERROR_CODES[code]);
+  }
+}
+
+function isOfficialCapexOpexRequest(request) {
+  if (![REQUEST_TYPE.CAPEX, REQUEST_TYPE.OPEX].includes(request.requestType)) return false;
+  return Boolean(
+    String(request.areaCorrelative || request.title || request.detailedDescription || request.businessJustification || request.nonApprovalRisk || "").trim()
+    || request.quotations?.length
+    || (request.lines || []).some((line) => line.itemDescription || (line.quantity !== undefined && line.quantity !== null) || (line.unitPrice !== undefined && line.unitPrice !== null) || line.unitOfMeasure)
+    || request.capexDetails?.assetCategory
+    || request.capexDetails?.projectSnapshot?.id
+    || request.opexDetails?.expenseFrequency
+  );
+}
+
+function officialAuditSnapshot(request) {
+  const recommended = (request.quotations || []).find((quotation) => quotation.recommended);
+  return {
+    requestType: request.requestType,
+    requesterCostCenter: request.requesterCostCenter?._id || request.requesterCostCenter,
+    areaCorrelative: request.areaCorrelative,
+    title: request.title,
+    detailedDescription: request.detailedDescription,
+    businessJustification: request.businessJustification,
+    nonApprovalRisk: request.nonApprovalRisk,
+    capexDetails: request.capexDetails,
+    opexDetails: request.opexDetails,
+    quotationCount: request.quotations?.length || 0,
+    recommendedSupplier: recommended?.supplier?._id || recommended?.supplier,
+    supplierSelectionReason: request.supplierSelectionReason
+  };
+}
+
+async function assertQuotationPolicy(request) {
+  const policy = await configuredQuotationPolicy(request);
+  const result = validateStructuredQuotationComparison(request, policy);
+  if (!result.valid) {
+    const primary = result.errors[0]?.code || ERROR_CODES.VALIDATION_ERROR;
+    throw new AppError(
+      422,
+      "The quotation comparison is incomplete or inconsistent.",
+      { errors: result.errors, policy },
+      ERROR_CODES[primary] || primary
+    );
+  }
+  return result;
 }
 
 function applyEditableFields(request, payload) {
@@ -184,12 +338,14 @@ function applyEditableFields(request, payload) {
     "description"
   ];
   for (const field of fields) if (payload[field] !== undefined) request[field] = payload[field];
-  if (payload.capexDetails !== undefined) request.capexDetails = parseJson(payload.capexDetails, "capexDetails") || {};
-  if (payload.opexDetails !== undefined) request.opexDetails = parseJson(payload.opexDetails, "opexDetails") || {};
+  if (payload.requesterCostCenter !== undefined) request.requesterCostCenter = payload.requesterCostCenter?._id || payload.requesterCostCenter;
+  if (payload.capexDetails !== undefined) request.capexDetails = parseCapexDetails(payload.capexDetails);
+  if (payload.opexDetails !== undefined) request.opexDetails = parseOpexDetails(payload.opexDetails);
   if (payload.quotations !== undefined) request.quotations = parseQuotations(payload.quotations);
 }
 
 async function prepareRequest(request, { user, files = {}, validateSubmission = false }) {
+  const officialRequest = isOfficialCapexOpexRequest(request);
   assertRequestLines(request.lines);
   await validateAccountingDimensions({
     requestType: request.requestType,
@@ -200,8 +356,11 @@ async function prepareRequest(request, { user, files = {}, validateSubmission = 
   const supplier = await Supplier.findById(request.supplier?._id || request.supplier);
   if (!supplier) throw new AppError(404, "Supplier not found.", { supplier: request.supplier }, ERROR_CODES.NOT_FOUND);
   request.supplierSnapshot = supplierSnapshot(supplier);
+  linkQuotationEvidence(request);
   await applyQuotationSnapshots(request);
   request.requesterCostCenter ||= user.costCenter;
+  await validateHeaderCostCenter(request, user, { required: validateSubmission && officialRequest });
+  await applyProjectSnapshot(request);
   await applyExchangeRate(request);
   await request.validate();
 
@@ -225,7 +384,13 @@ async function prepareRequest(request, { user, files = {}, validateSubmission = 
   }
 
   if (validateSubmission) {
-    assertSupplierUsable(supplier);
+    if (officialRequest) {
+      assertOfficialRequestFields(request);
+      assertSupplierEligibleForRequestReview(supplier);
+      await assertQuotationPolicy(request);
+    } else {
+      assertSupplierUsable(supplier);
+    }
     await assertConfiguredDocuments(request);
     if (MANDATORY_XML_TYPES.includes(request.requestType) && !request.xmlValidation?.validated) {
       throw new AppError(422, "A valid XML fiscal document is required.", { requestType: request.requestType }, ERROR_CODES.XML_VALIDATION_FAILED);
@@ -313,15 +478,16 @@ export async function getRequestDetail(id, user) {
   const request = await FinancialRequest.findById(id).populate(requestPopulate);
   if (!request) throw new AppError(404, "Financial request not found.", { id }, ERROR_CODES.NOT_FOUND);
   if (!canViewRequest(request, user)) throw new AppError(403, "You do not have permission to view this request.", undefined, ERROR_CODES.FORBIDDEN);
-  const [accountsPayable, journalEntries, paymentBatches, reconciliation, audit] = await Promise.all([
+  const [accountsPayable, journalEntries, paymentBatches, reconciliation, audit, budgetPreview] = await Promise.all([
     AccountsPayable.find({ request: request._id }).populate("supplier", "name legalName rucDni").sort({ createdAt: 1 }),
     JournalEntry.find({ request: request._id }).sort({ accountingDate: 1, createdAt: 1 }),
     PaymentBatch.find({ "items.request": request._id }).select("-filePath").sort({ generatedAt: -1 }),
     Reconciliation.findOne({ request: request._id }).populate("reconciledBy", "name email role"),
     AuditLog.find({ $or: [{ requestId: request._id }, { entityType: "FinancialRequest", entityId: request._id }] })
-      .populate("user", "name email role").sort({ createdAt: 1 })
+      .populate("user", "name email role").sort({ createdAt: 1 }),
+    previewBudget(request).catch((error) => ({ status: "PENDING_VALIDATION", errorCode: error.code || ERROR_CODES.VALIDATION_ERROR, lines: [] }))
   ]);
-  return { request, accountsPayable, journalEntries, paymentBatches, reconciliation, audit };
+  return { request, accountsPayable, journalEntries, paymentBatches, reconciliation, audit, budgetPreview };
 }
 
 export async function createFinancialRequest({ payload, files, user, req }) {
@@ -336,7 +502,7 @@ export async function createFinancialRequest({ payload, files, user, req }) {
     solicitor: user._id,
     requesterArea: user.area,
     requestingArea: user.area,
-    requesterCostCenter: user.costCenter,
+    requesterCostCenter: payload.requesterCostCenter || user.costCenter,
     schoolOrDepartment: payload.schoolOrDepartment || user.area,
     project: payload.project,
     issueDate: payload.issueDate,
@@ -349,8 +515,8 @@ export async function createFinancialRequest({ payload, files, user, req }) {
     detailedDescription: payload.detailedDescription,
     businessJustification: payload.businessJustification,
     nonApprovalRisk: payload.nonApprovalRisk,
-    capexDetails: parseJson(payload.capexDetails, "capexDetails") || {},
-    opexDetails: parseJson(payload.opexDetails, "opexDetails") || {},
+    capexDetails: parseCapexDetails(payload.capexDetails),
+    opexDetails: parseOpexDetails(payload.opexDetails),
     quotations: parseQuotations(payload.quotations),
     supplierSelectionReason: payload.supplierSelectionReason,
     lines,
@@ -382,7 +548,13 @@ export async function updateFinancialRequest({ id, payload, files, user, req }) 
   if (!canModifyRequest(request, user)) throw new AppError(403, "This request cannot be modified in its current state.", { status: request.status }, ERROR_CODES.FORBIDDEN);
   const nextPeriod = payload.accountingPeriod || request.accountingPeriod;
   await guardAccountingPeriod({ period: nextPeriod, action: "UPDATE", user, req, module: "REQUESTS", entityType: "FinancialRequest", entityId: request._id, requestId: request._id });
-  const oldValues = { status: request.status, supplier: request.supplier, totalAmount: request.totalAmount, accountingPeriod: request.accountingPeriod };
+  const oldValues = {
+    status: request.status,
+    supplier: request.supplier,
+    totalAmount: request.totalAmount,
+    accountingPeriod: request.accountingPeriod,
+    officialRequest: officialAuditSnapshot(request)
+  };
   if (payload.lines !== undefined) request.lines = parseRequestLines(payload.lines);
   applyEditableFields(request, payload);
   request.draftSavedAt = new Date();
@@ -403,7 +575,12 @@ export async function updateFinancialRequest({ id, payload, files, user, req }) 
       req,
       module: "REQUESTS",
       oldValues,
-      newValues: { supplier: request.supplier, totalAmount: request.totalAmount, accountingPeriod: request.accountingPeriod }
+      newValues: {
+        supplier: request.supplier,
+        totalAmount: request.totalAmount,
+        accountingPeriod: request.accountingPeriod,
+        officialRequest: officialAuditSnapshot(request)
+      }
     });
     if (submit) await submitPreparedRequest(request, { user, req, comments: payload.comments });
     await request.populate(requestPopulate);
@@ -462,6 +639,54 @@ export async function deleteFinancialRequest({ id, user, req }) {
 
 export async function requestDocumentRequirements(query) {
   return configuredDocumentRequirements({ requestType: query.requestType, expenseNature: query.expenseNature, attachments: [] });
+}
+
+export async function requestFormPolicy(query) {
+  const request = { requestType: query.requestType, expenseNature: query.expenseNature, attachments: [] };
+  const [documentRequirements, quotationPolicy] = await Promise.all([
+    configuredDocumentRequirements(request),
+    configuredQuotationPolicy(request)
+  ]);
+  return { documentRequirements, quotationPolicy };
+}
+
+export async function requestAuthorizedCostCenters(user) {
+  const query = { active: true };
+  if (user.role === ROLES.SOLICITOR) {
+    const allowed = [user.costCenter, ...(user.authorizedCostCenters || [])]
+      .filter(Boolean)
+      .map((value) => value?._id || value);
+    query._id = { $in: allowed };
+  }
+  return CostCenter.find(query).select("code name area active annualBudget committedAmount executedAmount paidAmount budgetMode availableAmount").sort({ code: 1 });
+}
+
+export async function previewFinancialRequestBudget({ payload, user }) {
+  const lines = parseRequestLines(payload.lines);
+  assertRequestLines(lines);
+  await validateAccountingDimensions({
+    requestType: payload.requestType,
+    expenseNature: payload.expenseNature,
+    lines,
+    user
+  });
+  const exchangeRate = payload.currency === "PEN" ? 1 : Number(payload.exchangeRate || 0);
+  if (!(exchangeRate > 0)) {
+    return { status: "PENDING_VALIDATION", reason: ERROR_CODES.EXCHANGE_RATE_MISSING, totalRequested: 0, lines: [] };
+  }
+  for (const line of lines) {
+    line.currency = payload.currency;
+    line.exchangeRate = exchangeRate;
+    line.penEquivalent = multiplyMoney(line.totalAmount, exchangeRate);
+  }
+  return previewBudget({
+    requestType: payload.requestType,
+    expenseNature: payload.expenseNature,
+    issueDate: payload.issueDate,
+    accountingPeriod: payload.accountingPeriod,
+    project: payload.project,
+    lines
+  });
 }
 
 export function publicRequestPayload(value) {

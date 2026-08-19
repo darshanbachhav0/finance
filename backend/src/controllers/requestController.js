@@ -5,8 +5,11 @@ import {
   deleteFinancialRequest,
   getRequestDetail,
   listRequestsPage,
+  previewFinancialRequestBudget,
   publicRequestPayload,
+  requestAuthorizedCostCenters,
   requestDocumentRequirements,
+  requestFormPolicy,
   submitFinancialRequest,
   updateFinancialRequest,
   voidFinancialRequest
@@ -27,13 +30,26 @@ export const getRequest = asyncHandler(async (req, res) => {
       journalEntries: result.journalEntries,
       paymentBatches: result.paymentBatches,
       reconciliation: result.reconciliation,
-      audit: result.audit
+      audit: result.audit,
+      budgetPreview: result.budgetPreview
     }
   });
 });
 
 export const getRequestDocumentRequirements = asyncHandler(async (req, res) => {
   res.json({ data: await requestDocumentRequirements(req.query) });
+});
+
+export const getRequestFormPolicy = asyncHandler(async (req, res) => {
+  res.json({ data: await requestFormPolicy(req.query) });
+});
+
+export const getAuthorizedCostCenters = asyncHandler(async (req, res) => {
+  res.json({ data: await requestAuthorizedCostCenters(req.user) });
+});
+
+export const getBudgetPreview = asyncHandler(async (req, res) => {
+  res.json({ data: await previewFinancialRequestBudget({ payload: req.body, user: req.user }) });
 });
 
 export const createRequest = asyncHandler(async (req, res) => {

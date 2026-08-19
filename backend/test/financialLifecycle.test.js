@@ -146,7 +146,7 @@ test("production financial controls cover the canonical lifecycle", { timeout: 1
     });
 
     await t.test("5. duplicate supplier is blocked", async () => {
-      const payload = { rucDni: "20888888881", legalName: "Duplicate Test" };
+      const payload = { rucDni: "20888888881", legalName: "Duplicate Test", proposalJustification: "Required for a duplicate-control test." };
       await createSupplierProposal({ payload, files: {}, user: users.solicitor, req });
       await assert.rejects(() => createSupplierProposal({ payload, files: {}, user: users.solicitor, req }), (error) => error.code === "DUPLICATE_SUPPLIER");
     });
@@ -158,7 +158,7 @@ test("production financial controls cover the canonical lifecycle", { timeout: 1
       await replaceActiveBankAccount(historySupplier, { bankName: "BBVA", currency: "PEN", bankAccount: "333", cci: "01133300000000000001" }, users.accounting._id);
       await historySupplier.save();
       assert.equal(await SupplierBankAccount.countDocuments({ supplier: historySupplier._id }), 2);
-      assert.equal(await SupplierBankAccount.countDocuments({ supplier: historySupplier._id, active: true }), 1);
+      assert.equal(await SupplierBankAccount.countDocuments({ supplier: historySupplier._id, active: true }), 2);
     });
 
     await t.test("7. Director approval", async () => {

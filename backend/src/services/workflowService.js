@@ -111,7 +111,15 @@ async function assertTransitionControls(request, targetStatus, context = {}) {
   });
   assertRequestLines(request.lines);
 
-  if (![REQUEST_STATUS.DRAFT, REQUEST_STATUS.VALIDATION, REQUEST_STATUS.VOIDED].includes(targetStatus)) {
+  if (![
+    REQUEST_STATUS.DRAFT,
+    REQUEST_STATUS.VALIDATION,
+    REQUEST_STATUS.SENT,
+    REQUEST_STATUS.PENDING_APPROVAL,
+    REQUEST_STATUS.DIRECTOR_APPROVED,
+    REQUEST_STATUS.VICE_RECTOR_APPROVED,
+    REQUEST_STATUS.VOIDED
+  ].includes(targetStatus)) {
     const supplier = request.supplier?.homologationStatus ? request.supplier : await Supplier.findById(request.supplier);
     const valid = supplier && (
       (supplier.homologationStatus === "HOMOLOGATED" && supplier.active) ||

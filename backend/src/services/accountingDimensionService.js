@@ -39,7 +39,12 @@ export async function validateAccountingDimensions({ requestType, expenseNature,
     const center = costCenterMap.get(String(line.costCenter?._id || line.costCenter || ""));
     const expense = expenseTypeMap.get(String(line.expenseType?._id || line.expenseType || ""));
     if (!center?.active) {
-      throw new AppError(422, `Line ${lineNumber} must use an active Cost Center.`, { line: lineNumber }, ERROR_CODES.VALIDATION_ERROR);
+      throw new AppError(
+        422,
+        `Line ${lineNumber} must use an active Cost Center.`,
+        { line: lineNumber, costCenter: line.costCenter },
+        ERROR_CODES.INVALID_COST_CENTER_LINE
+      );
     }
     if (!expense?.active) {
       throw new AppError(422, `Line ${lineNumber} must use an active expense account/type.`, { line: lineNumber }, ERROR_CODES.VALIDATION_ERROR);
@@ -47,9 +52,9 @@ export async function validateAccountingDimensions({ requestType, expenseNature,
     if (user?.role === ROLES.SOLICITOR && !canUseCostCenter(user, center._id)) {
       throw new AppError(
         403,
-        `Line ${lineNumber} uses a Cost Center that is not assigned to the requester.`,
-        { line: lineNumber, costCenter: center._id },
-        ERROR_CODES.FORBIDDEN
+        `Line ${lineNumber} uses CECO ${center.code} - ${center.name}. This Cost Center is not assigned to the current requester.`,
+        { line: lineNumber, costCenter: center._id, code: center.code, name: center.name, area: center.area },
+        ERROR_CODES.INVALID_COST_CENTER_LINE
       );
     }
 
@@ -81,4 +86,3 @@ export async function validateAccountingDimensions({ requestType, expenseNature,
   }
   return { costCenters, expenseTypes };
 }
-

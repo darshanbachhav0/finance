@@ -11,7 +11,14 @@ export class ManualSunatProvider extends SunatProvider {
     if (!context.authorizedDecision) {
       throw new AppError(422, "Authorized manual taxpayer validation is required.", { identifier, provider: "MANUAL" }, ERROR_CODES.INTEGRATION_NOT_CONFIGURED);
     }
-    return { valid: Boolean(context.valid), source: "MANUAL", comments: context.comments, validatedBy: context.user?._id };
+    return {
+      valid: Boolean(context.valid),
+      source: "MANUAL",
+      returnedIdentifier: context.returnedIdentifier,
+      returnedLegalName: context.returnedLegalName,
+      comments: context.comments,
+      validatedBy: context.user?._id
+    };
   }
 
   async validateVoucher(voucher, context = {}) {
@@ -30,4 +37,3 @@ export class ManualSunatProvider extends SunatProvider {
     );
   }
 }
-

@@ -130,10 +130,13 @@ export function validateStructuredQuotationComparison(request, policy = defaultQ
     errors.push({ code: "QUOTATION_EXCEPTION_REASON_REQUIRED" });
   }
   if (quotations.some((quotation) => !quotation.supplier)) errors.push({ code: "QUOTATION_SUPPLIER_REQUIRED" });
-  if (quotations.some((quotation) => !quotation.attachment)) errors.push({ code: "QUOTATION_EVIDENCE_REQUIRED" });
+  quotations.forEach((quotation, index) => {
+    if (!quotation.attachment) errors.push({ code: "QUOTATION_ATTACHMENT_REQUIRED", quotation: index + 1 });
+  });
 
   const recommended = quotations.filter((quotation) => quotation.recommended);
-  if (recommended.length !== 1) errors.push({ code: "ONE_RECOMMENDED_QUOTATION_REQUIRED", present: recommended.length });
+  if (recommended.length === 0) errors.push({ code: "NO_RECOMMENDED_QUOTATION", present: 0 });
+  if (recommended.length > 1) errors.push({ code: "MULTIPLE_RECOMMENDED_QUOTATIONS", present: recommended.length });
   const selectedSupplier = String(request.supplier?._id || request.supplier || "");
   if (recommended.length === 1 && String(recommended[0].supplier?._id || recommended[0].supplier || "") !== selectedSupplier) {
     errors.push({ code: "RECOMMENDED_SUPPLIER_MISMATCH" });
