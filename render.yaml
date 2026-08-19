@@ -11,7 +11,7 @@ services:
     routes:
       - type: rewrite
         source: /*
-        destination: https://following-measure-specifically-wish.trycloudflare.com/*
+        destination: https://net-sophisticated-felt-monster.trycloudflare.com/*
     headers:
       - path: /*
         name: X-Content-Type-Options
