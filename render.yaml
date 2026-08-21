@@ -11,7 +11,7 @@ services:
     routes:
       - type: rewrite
         source: /*
-        destination: https://biotechnology-sport-buses-desirable.trycloudflare.com/*
+        destination: https://offers-crowd-athens-trained.trycloudflare.com/*
     headers:
       - path: /*
         name: X-Content-Type-Options
